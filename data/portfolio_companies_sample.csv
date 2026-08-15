@@ -1,0 +1,16 @@
+company_id,company_name,funding_stage,founder_name,founder_email,runway_months,last_board_update,cap_table_current,audited_financials,data_room_ref
+PC-001,Lumen Robotics,seed,Ava Sinclair,ava.sinclair@example.com,14,2026-08-01,yes,yes,DR-001
+PC-002,Northwind Analytics,series-a,Ben Okafor,ben.okafor@example.com,4,2026-08-05,yes,yes,DR-002
+PC-003,Verdant Foods,pre-seed,Priya Chandran,priya.chandran@example.com,18,2026-05-01,yes,yes,DR-003
+PC-004,Circuit & Sail,seed,Tomas Vidal,tomas.vidal@example.com,9,2026-08-10,no,yes,DR-004
+PC-005,Harborlight Health,series-b,Nadia Farouk,nadia.farouk@example.com,22,2026-08-12,yes,no,DR-005
+PC-006,Pinecrest Logistics,seed,Colin Baxter,colin.baxter@example.com,11,2026-07-20,yes,yes,
+PC-007,Aurelia Biotech,series-a,Ines Petrov,ines.petrov@example.com,6,2026-08-14,yes,yes,DR-007
+PC-008,Solstice Learning,pre-seed,Marcus Ellison,marcus.ellison@example.com,2.5,2026-03-01,no,no,
+PC-009,Kestrel Mobility,seed,Ruth Ndiaye,ruth.ndiaye@example.com,13,2026-08-03,yes,yes,DR-009
+PC-010,Ferrous Materials,series-a,Hugo Lindberg,hugo.lindberg@example.com,8,2026-08-08,yes,yes,DR-010
+PC-011,Willowmere Edtech,growth,Sara Kowalski,sara.kowalski@example.com,16,2026-08-11,yes,yes,DR-011
+PC-012,Basalt Energy Storage,seed,Diego Ramos,diego.ramos@example.com,5.5,2026-06-15,yes,yes,DR-012
+PC-013,Coral & Vine,pre-seed,Mei Lin,mei.lin@example.com,20,2026-08-09,yes,yes,DR-013
+PC-014,Ironclad Cyber,series-b,Owen Baptiste,owen.baptiste@example.com,30,2026-08-13,yes,yes,DR-014
+PC-015,Driftwood Studio,seed,Alina Popescu,alina.popescu@example.com,3,2026-02-01,no,no,

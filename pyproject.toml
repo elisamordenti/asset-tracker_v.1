@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compliance-tracker"
+version = "0.1.0"
+description = "Config-driven compliance validator, Excel tracker generator, and follow-up email drafter for any org managing many distributed assets."
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+compliance-tracker = "compliance_tracker.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

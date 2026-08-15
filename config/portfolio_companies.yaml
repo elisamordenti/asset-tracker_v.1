@@ -1,0 +1,89 @@
+# Domain config for early-stage portfolio company compliance/reporting
+# hygiene tracking. Different field names, different rules, different Excel
+# columns than config/energy_assets.yaml -- but the exact same engine code.
+
+domain: "Portfolio Companies"
+
+source:
+  type: csv
+  path: "data/portfolio_companies_sample.csv"
+  id_field: company_id
+
+contact:
+  name_field: founder_name
+  email_field: founder_email
+
+rules:
+  - id: financials_audited
+    field: audited_financials
+    type: allowed_values
+    values: ["yes"]
+    severity: critical
+    message: "Financial statements are not audited (reported: '{value}')"
+
+  - id: cap_table_current
+    field: cap_table_current
+    type: allowed_values
+    values: ["yes"]
+    severity: critical
+    message: "Cap table has not been confirmed current (reported: '{value}')"
+
+  - id: board_update_recent
+    field: last_board_update
+    type: not_expired
+    max_age_days: 45
+    severity: warning
+    message: "Last board update was {value}, more than 45 days ago"
+
+  - id: runway_min
+    field: runway_months
+    type: min_value
+    min: 6
+    severity: critical
+    message: "Runway is {value} months, below the 6-month minimum"
+
+  - id: has_data_room_link
+    field: data_room_ref
+    type: required
+    severity: warning
+    message: "Missing data room reference link"
+
+  - id: stage_valid
+    field: funding_stage
+    type: allowed_values
+    values: ["pre-seed", "seed", "series-a", "series-b"]
+    severity: warning
+    message: "Funding stage '{value}' is not a recognized stage"
+
+excel:
+  summary_columns:
+    - {field: company_id, label: "Company ID"}
+    - {field: company_name, label: "Company Name"}
+    - {field: compliance_status, label: "Status"}
+    - {field: critical_count, label: "Critical Issues"}
+    - {field: warning_count, label: "Warnings"}
+    - {field: founder_name, label: "Founder Contact"}
+
+  detail_columns:
+    - {field: company_id, label: "Company ID"}
+    - {field: company_name, label: "Company Name"}
+    - {field: funding_stage, label: "Stage"}
+    - {field: runway_months, label: "Runway (months)"}
+    - {field: last_board_update, label: "Last Board Update"}
+    - {field: cap_table_current, label: "Cap Table Current"}
+    - {field: audited_financials, label: "Audited Financials"}
+    - {field: data_room_ref, label: "Data Room Ref"}
+
+email:
+  subject_template: "Action Required: Reporting Items for {company_name}"
+  body_template: |
+    Hi {founder_name},
+
+    Ahead of our next review, the following reporting items need attention for {company_name} ({company_id}):
+
+    {issues_list}
+
+    Please send updated materials at your earliest convenience.
+
+    Thanks,
+    Portfolio Compliance Tracker

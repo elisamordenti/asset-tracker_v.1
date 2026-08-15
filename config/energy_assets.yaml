@@ -1,0 +1,90 @@
+# Domain config for solar/wind asset compliance tracking.
+# Everything here is data, not code: swap this file (and the CSV it points
+# to) for a different domain and the engine behaves identically.
+
+domain: "Energy Assets"
+
+source:
+  type: csv
+  path: "data/energy_assets_sample.csv"
+  id_field: asset_id
+
+contact:
+  name_field: contact_name
+  email_field: contact_email
+
+rules:
+  - id: cert_current
+    field: certification_expiry
+    type: not_expired
+    max_age_days: 0
+    severity: critical
+    message: "Grid connection certification expired on {value}"
+
+  - id: insurance_current
+    field: insurance_expiry
+    type: not_expired
+    max_age_days: 0
+    severity: critical
+    message: "Insurance policy expired on {value}"
+
+  - id: margin_min
+    field: margin_pct
+    type: min_value
+    min: 5
+    severity: warning
+    message: "Margin {value}% is below the 5% minimum threshold for financing"
+
+  - id: maintenance_status_valid
+    field: maintenance_status
+    type: allowed_values
+    values: ["current", "scheduled"]
+    severity: warning
+    message: "Maintenance status '{value}' is not acceptable (must be current or scheduled)"
+
+  - id: has_permit_doc
+    field: permit_doc_ref
+    type: required
+    severity: critical
+    message: "Missing permit document reference"
+
+  - id: permit_doc_format
+    field: permit_doc_ref
+    type: regex_match
+    pattern: "^PMT-[0-9]{4,}$"
+    severity: warning
+    message: "Permit document reference '{value}' does not match expected format PMT-####"
+
+excel:
+  summary_columns:
+    - {field: asset_id, label: "Asset ID"}
+    - {field: asset_name, label: "Asset Name"}
+    - {field: compliance_status, label: "Status"}
+    - {field: critical_count, label: "Critical Issues"}
+    - {field: warning_count, label: "Warnings"}
+    - {field: contact_name, label: "Responsible Contact"}
+
+  detail_columns:
+    - {field: asset_id, label: "Asset ID"}
+    - {field: asset_name, label: "Asset Name"}
+    - {field: location, label: "Location"}
+    - {field: certification_expiry, label: "Certification Expiry"}
+    - {field: insurance_expiry, label: "Insurance Expiry"}
+    - {field: margin_pct, label: "Margin %"}
+    - {field: maintenance_status, label: "Maintenance Status"}
+    - {field: permit_doc_ref, label: "Permit Doc Ref"}
+
+email:
+  subject_template: "Action Required: Compliance Issues for {asset_name}"
+  body_template: |
+    Hi {contact_name},
+
+    Our latest compliance review flagged the following issues for {asset_name} ({asset_id}):
+
+    {issues_list}
+
+    Please provide updated information at your earliest convenience so we can
+    keep this asset eligible for financing and tender submissions.
+
+    Thanks,
+    Compliance Tracker

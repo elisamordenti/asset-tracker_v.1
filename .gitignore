@@ -1,0 +1,20 @@
+# Generated output (Excel trackers, drafted emails)
+output/
+
+# Secrets / local env
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
