@@ -118,6 +118,54 @@ def _next_deadline(config: AppConfig, result: AssetResult) -> str:
     return min(dates).isoformat() if dates else ""
 
 
+def tracker_headers(config: AppConfig) -> list[str]:
+    return (
+        [c.label for c in config.excel.info_columns]
+        + [r.label for r in config.rules]
+        + [NEXT_DEADLINE_LABEL, LAST_REMINDER_LABEL, REMINDER_COUNT_LABEL, STATUS_LABEL]
+        + [c.label for c in config.excel.notes_columns]
+    )
+
+
+def build_tracker_table(
+    config: AppConfig,
+    results: list[AssetResult],
+    reminder_summary: dict[str, ReminderSummary],
+    existing_notes: dict[str, dict[str, str]],
+) -> tuple[list[str], list[AssetResult], list[list[str]]]:
+    """Presentation-agnostic Tracker content: headers, the same assets in
+    display order, and each asset's row values. Used by both the Excel
+    writer (which layers styling/fills on top) and the Google Sheets sync
+    (which writes the values as-is) -- this is the single place that decides
+    what goes in each Tracker cell."""
+    info_columns = config.excel.info_columns
+    rules = config.rules
+    notes_columns = config.excel.notes_columns
+
+    headers = tracker_headers(config)
+    ordered = sorted(results, key=lambda r: (r.compliance_status != FLAGGED, r.asset_id))
+
+    rows: list[list[str]] = []
+    for result in ordered:
+        row: list = [result.record.get(c.field, "") for c in info_columns]
+        row += [resolve_value(rule, result.record) for rule in rules]
+
+        reminder = reminder_summary.get(result.asset_id)
+        row += [
+            _next_deadline(config, result),
+            reminder.last_sent if reminder else "",
+            reminder.count if reminder else 0,
+            result.compliance_status,
+        ]
+
+        preserved = existing_notes.get(result.asset_id, {})
+        row += [preserved.get(c.label, "") or "" for c in notes_columns]
+
+        rows.append(row)
+
+    return headers, ordered, rows
+
+
 def _write_tracker_sheet(
     ws: Worksheet,
     config: AppConfig,
@@ -129,48 +177,28 @@ def _write_tracker_sheet(
     rules = config.rules
     notes_columns = config.excel.notes_columns
 
-    labels = (
-        [c.label for c in info_columns]
-        + [r.label for r in rules]
-        + [NEXT_DEADLINE_LABEL, LAST_REMINDER_LABEL, REMINDER_COUNT_LABEL, STATUS_LABEL]
-        + [c.label for c in notes_columns]
-    )
-    _write_header(ws, labels)
+    headers, ordered, rows = build_tracker_table(config, results, reminder_summary, existing_notes)
+    _write_header(ws, headers)
+    total_cols = len(headers)
 
-    ordered = sorted(results, key=lambda r: (r.compliance_status != FLAGGED, r.asset_id))
-    total_cols = len(labels)
+    n_info = len(info_columns)
+    n_rules = len(rules)
+    rule_col_start = n_info + 1
+    status_col_idx = n_info + n_rules + 4
+    notes_col_start = status_col_idx + 1
 
-    for row_idx, result in enumerate(ordered, start=2):
-        col_idx = 1
-        for column in info_columns:
-            ws.cell(row=row_idx, column=col_idx, value=result.record.get(column.field, ""))
-            col_idx += 1
-
-        violated_rule_ids = {v.rule_id for v in result.violations}
-        for rule in rules:
-            value = resolve_value(rule, result.record)
+    for row_idx, (result, row) in enumerate(zip(ordered, rows), start=2):
+        for col_idx, value in enumerate(row, start=1):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            cell.fill = FAIL_FILL if rule.id in violated_rule_ids else PASS_FILL
-            col_idx += 1
 
-        ws.cell(row=row_idx, column=col_idx, value=_next_deadline(config, result))
-        col_idx += 1
-
-        reminder = reminder_summary.get(result.asset_id)
-        ws.cell(row=row_idx, column=col_idx, value=reminder.last_sent if reminder else "")
-        col_idx += 1
-        ws.cell(row=row_idx, column=col_idx, value=reminder.count if reminder else 0)
-        col_idx += 1
-
-        status_cell = ws.cell(row=row_idx, column=col_idx, value=result.compliance_status)
-        status_cell.fill = PASS_FILL if result.compliance_status == COMPLIANT else FAIL_FILL
-        col_idx += 1
-
-        preserved = existing_notes.get(result.asset_id, {})
-        for notes_column in notes_columns:
-            cell = ws.cell(row=row_idx, column=col_idx, value=preserved.get(notes_column.label, ""))
-            cell.fill = NOTES_FILL
-            col_idx += 1
+            if rule_col_start <= col_idx < rule_col_start + n_rules:
+                rule = rules[col_idx - rule_col_start]
+                violated_rule_ids = {v.rule_id for v in result.violations}
+                cell.fill = FAIL_FILL if rule.id in violated_rule_ids else PASS_FILL
+            elif col_idx == status_col_idx:
+                cell.fill = PASS_FILL if result.compliance_status == COMPLIANT else FAIL_FILL
+            elif col_idx >= notes_col_start:
+                cell.fill = NOTES_FILL
 
     _autosize_columns(ws, total_cols)
 
