@@ -1,9 +1,10 @@
 # Asset Compliance Validator
 
 A config-driven engine that checks hundreds of distributed "assets" against a
-compliance rulebook, builds a centralized Excel tracker, and drafts follow-up
-emails for whatever's missing — with zero code changes required to point it
-at a completely different domain.
+compliance rulebook, keeps a living tracker up to date (locally in Excel, or
+synced to a shared Google Sheet), and drafts — or sends — follow-up emails
+for whatever's missing. Zero code changes required to point it at a
+completely different domain.
 
 ## The problem this replaces
 
@@ -13,7 +14,7 @@ for bank financing and winning tenders: each asset needs current
 documentation, accurate margin and maintenance records, and specific
 technical criteria met. Checking compliance and assembling the data room for
 banks was a manual, error-prone process that took **about three weeks**, most
-of it spent chasing clients for missing information.
+of it spent chasing clients for missing documents.
 
 This project rebuilds that workflow as a generic, auditable pipeline:
 
@@ -21,8 +22,10 @@ This project rebuilds that workflow as a generic, auditable pipeline:
 |---|---|---|
 | Checking every asset against the rulebook | Manual, spreadsheet by spreadsheet | One command, deterministic |
 | Building the bank/tender data room | ~3 weeks | ~1 day |
-| Knowing *why* something was flagged | Tribal knowledge | Every flag traces to one rule + one value in an Issues Log |
-| Chasing clients for missing info | Ad hoc emails | Auto-drafted, one per flagged asset, ready to send |
+| Knowing *why* something was flagged | Tribal knowledge | Every flag traces to one rule + one value in an Audit Log |
+| Confirming a document was actually filed | Digging through email/drive | Checked against a real document archive automatically |
+| Tracking who's been chased and when | Sticky notes / memory | A persistent reminder log, visible in the tracker |
+| Chasing clients for missing info | Ad hoc emails | Auto-drafted per flagged asset; real sending is one flag away |
 | Adapting to a new asset type / schema | Rewrite the spreadsheet macros | Edit a YAML file |
 
 All data in this repo is synthetic. Nothing here comes from a real client.
@@ -30,39 +33,40 @@ All data in this repo is synthetic. Nothing here comes from a real client.
 ## How it works
 
 ```
-CSV (or any future source) --> Loader --> Validator --> Excel Tracker
-                                              |            (Summary /
-                                        Rules (YAML)        Asset Detail /
-                                              |              Issues Log)
-                                              v
-                                       Email Drafts (.txt)
+CSV registry  ---\
+                  >--> Loader --> Validator --> Tracker (Excel, or a live Google Sheet)
+Document       --/         |                         |
+archive (PDFs)        Rules (YAML)              Audit Log (full trail)
+                            |                         |
+                            v                         v
+                   Reminder Log (persistent)   Email drafts (.txt) --> optionally sent
 ```
 
 Every domain-specific decision — which fields exist, which rules apply, what
-the Excel columns are called, how the follow-up email reads — lives in one
-YAML config per domain. The engine code (`src/compliance_tracker/`) never
-mentions a domain by name.
+the tracker's columns are called, how the follow-up email reads — lives in
+one YAML config per domain. The engine code (`src/compliance_tracker/`)
+never mentions a domain by name.
 
 **The validation engine is deterministic and rule-based, not an LLM.** Every
-rule is one of six generic, auditable check types:
+rule is one of seven generic, auditable check types:
 
 | Type | Checks | Example use |
 |---|---|---|
-| `required` | Field is non-empty | Missing permit document |
+| `required` | Field is non-empty | Missing data-room reference |
 | `not_expired` | Date field isn't older than today + a grace period | Expired certification |
-| `min_value` | Numeric field ≥ a threshold | Margin below minimum |
-| `max_value` | Numeric field ≤ a threshold | Headcount over budget |
+| `min_value` | Numeric field ≥ a threshold | Runway below minimum |
+| `max_value` | Numeric field ≤ a threshold | Downtime over budget |
 | `allowed_values` | Field is one of a fixed set | Invalid status value |
-| `regex_match` | Field matches a format | Malformed document reference |
+| `regex_match` | Field matches a format | Malformed reference code |
+| `document_on_file` | A specific file exists in the document archive | Insurance certificate never filed |
 
 A human can read this list and know exactly what the system can and can't
 check. That's a deliberate boundary, not an oversight: swapping *which*
-fields, thresholds, and messages apply to *any* domain never touches code —
-only YAML does. Adding a genuinely new *kind* of check (e.g. comparing two
-fields to each other) would need one small function added to
-[`rules.py`](src/compliance_tracker/rules.py); that's the one place domain
-logic could ever leak into code, and it hasn't needed to for either domain
-below.
+fields, thresholds, and documents apply to *any* domain never touches code —
+only YAML does. Adding a genuinely new *kind* of check would need one small
+function added to [`rules.py`](src/compliance_tracker/rules.py); that's the
+one place domain logic could ever leak into code, and it hasn't needed to
+for either domain below.
 
 ## Quickstart
 
@@ -75,30 +79,103 @@ python -m compliance_tracker run --config config/portfolio_companies.yaml
 pytest
 ```
 
-Each run writes `output/<domain>/tracker.xlsx` (Summary, Asset Detail, and
-Issues Log sheets) and `output/<domain>/emails/*.txt` (one draft per flagged
-asset). `output/` is gitignored — nothing generated is committed.
+Each run writes `output/<domain>/tracker.xlsx`, drafted follow-up emails to
+`output/<domain>/emails/*.txt`, and a `reminder_log.csv`. `output/` is
+gitignored — nothing generated is committed.
 
-## Proof: the same engine, two unrelated domains
+## The Tracker: one scannable matrix, not three cross-referenced sheets
 
-The whole premise of this project is that swapping domains costs a config
-file, not a code change. Rather than just claim that, here it is running
-against two datasets with entirely different fields:
-
-**Domain 1 — energy assets** ([config/energy_assets.yaml](config/energy_assets.yaml), [data/energy_assets_sample.csv](data/energy_assets_sample.csv)):
-fields like `certification_expiry`, `insurance_expiry`, `margin_pct`.
+The tracker is one row per asset, one column per requirement — the same
+shape as the data room checklist this project is meant to replace:
 
 ```
 $ python -m compliance_tracker run --config config/energy_assets.yaml
 Domain: Energy Assets
 Assets loaded: 18
-Flagged: 12 (6 compliant)
+Flagged: 14 (4 compliant)
 Excel tracker: output\energy_assets\tracker.xlsx
-Email drafts: 12 written to output\energy_assets\emails
+Email drafts: 14 written to output\energy_assets\emails
+Reminder log: output\energy_assets\reminder_log.csv
 ```
 
-**Domain 2 — early-stage portfolio companies** ([config/portfolio_companies.yaml](config/portfolio_companies.yaml), [data/portfolio_companies_sample.csv](data/portfolio_companies_sample.csv)):
-fields like `runway_months`, `last_board_update`, `cap_table_current` — chosen
+Tracker columns for the energy domain (auto-generated from
+[`config/energy_assets.yaml`](config/energy_assets.yaml), nothing hardcoded):
+
+```
+Asset ID | Asset Name | Location | Responsible Contact
+| Grid Cert Expiry | Grid Cert on File | Insurance Expiry | Insurance Cert on File
+| Permit on File | Margin % | Downtime (hrs/yr) | Maintenance Status
+| Next Deadline | Last Reminder Sent | Reminder Count | Status | Notes / Follow-up
+```
+
+Each rule becomes one column: the cell shows the actual value (a date, a
+percentage, a filename), color-coded green/red by whether that rule passed —
+so the same column is simultaneously a checklist ("is this filed/filled in")
+and a technical readout ("what does it actually say"). `Next Deadline`,
+`Last Reminder Sent`, and `Reminder Count` are computed automatically;
+`Status` only turns green once every rule for that asset passes. A second
+**Audit Log** sheet keeps the full one-row-per-violation trail for anyone
+who needs to trace a flag back to its exact rule and value.
+
+**The tracker is a living document, not a disposable snapshot.** The
+`Notes / Follow-up` column is config-declared free text — type into it
+directly in Excel, save, and re-run the tool: your note survives while every
+computed column refreshes to the latest validation. This is proven by test
+(`test_notes_survive_regeneration_for_asset_still_present` in
+[`test_excel_report.py`](tests/test_excel_report.py)), not just claimed.
+
+## Document archive: checking what's actually been filed, not just what's typed in
+
+Compliance data doesn't arrive pre-typed into a spreadsheet — it arrives as
+PDFs. `document_on_file` rules check a real archive folder
+(`data/energy_assets_documents/`, genuinely valid synthetic PDFs generated by
+[`scripts/generate_sample_documents.py`](scripts/generate_sample_documents.py))
+for the expected file per asset, so "insurance certificate not filed" is a
+real filesystem check, not a proxy field. Reading *values out of* a PDF's
+content is a different, harder problem — deliberately out of scope here (see
+Roadmap).
+
+## Two ways to run it: local Excel, or a live Google Sheet
+
+**`run`** — zero external setup, writes a local `.xlsx`. This is the
+zero-dependency path used for the domain-swap proof below.
+
+**`sync`** — pushes the same Tracker into a live Google Sheet instead, and
+can send real reminder emails:
+
+```bash
+pip install -e ".[sheets]"
+python -m compliance_tracker sync --config config/energy_assets.yaml \
+    --sheet-id <your-sheet-id> --send
+```
+
+This exists because a local Excel file fights you the moment two things want
+to touch it at once — this project hit that exact `PermissionError` mid-build
+when re-running the tool against a tracker that was still open in Excel.
+A Google Sheet is a cloud-hosted document: no local file, no lock, and it's a
+tool teams already use, so there's no migration cost either. `sync` requires
+a Google Cloud service account (see
+[`sheets_sync.py`](src/compliance_tracker/sheets_sync.py)'s module docstring
+for setup); the integration itself is fully unit-tested against a fake
+in-memory client, so none of its logic depends on real credentials existing.
+
+Real email sending (`--send`, or `send_drafted_emails()` directly) stays
+opt-in: it only fires with `EMAIL_SEND_MODE=live` plus `SMTP_HOST` /
+`SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` set as environment variables. No
+credentials are ever hardcoded, and CI never exercises the live-send path.
+Drafts are always written locally first regardless of which command you run.
+
+## Proof: the same engine, two unrelated domains
+
+The whole premise of this project is that swapping domains costs a config
+file, not a code change.
+
+**Domain 1 — energy assets**: fields like `certification_expiry`,
+`insurance_expiry`, `margin_pct`, plus the document archive above.
+
+**Domain 2 — early-stage portfolio companies**
+([config/portfolio_companies.yaml](config/portfolio_companies.yaml)): fields
+like `runway_months`, `last_board_update`, `cap_table_current` — chosen
 because it's the same "many distributed things need recurring compliance
 checks" pattern a growth fund would recognize from its own portfolio.
 
@@ -106,17 +183,20 @@ checks" pattern a growth fund would recognize from its own portfolio.
 $ python -m compliance_tracker run --config config/portfolio_companies.yaml
 Domain: Portfolio Companies
 Assets loaded: 15
-Flagged: 9 (6 compliant)
+Flagged: 12 (3 compliant)
 Excel tracker: output\portfolio_companies\tracker.xlsx
-Email drafts: 9 written to output\portfolio_companies\emails
+Email drafts: 12 written to output\portfolio_companies\emails
+Reminder log: output\portfolio_companies\reminder_log.csv
 ```
 
-Same `src/compliance_tracker/` code both times. The Excel column headers
-differ entirely because they're read from each config, not hardcoded:
+Same `src/compliance_tracker/` code both times. The Tracker columns differ
+entirely because they're read from each config, not hardcoded:
 
 ```
-Energy Assets Summary sheet:      Asset ID, Asset Name, Status, Critical Issues, Warnings, Responsible Contact
-Portfolio Companies Summary sheet: Company ID, Company Name, Status, Critical Issues, Warnings, Founder Contact
+Portfolio Tracker: Company ID | Company Name | Stage | Founder Contact
+| Financials Audited | Audit Report on File | Cap Table Current | Cap Table Export on File
+| Last Board Update | Runway (months) | Data Room Ref | Data Room Ref Format | Funding Stage
+| Next Deadline | Last Reminder Sent | Reminder Count | Status | Notes / Follow-up
 ```
 
 `tests/test_config_swap.py` runs both configs through the full pipeline and
@@ -145,47 +225,44 @@ rules:
     type: not_expired
     max_age_days: 0
     severity: critical
+    label: "Grid Cert Expiry"     # this rule's Tracker column header
     message: "Grid connection certification expired on {value}"
+
+  - id: insurance_doc_on_file
+    type: document_on_file
+    directory: "data/energy_assets_documents"
+    filename_pattern: "{asset_id}_insurance_certificate.pdf"
+    severity: critical
+    label: "Insurance Cert on File"
+    message: "Insurance certificate not found in document archive"
   # ...
 
 excel:
-  summary_columns: [...]    # column -> label, drives the Summary sheet
-  detail_columns: [...]     # column -> label, drives the Asset Detail sheet
+  info_columns: [...]       # identity/context columns shown first
+  notes_columns:            # free-text, preserved across runs
+    - {field: notes, label: "Notes / Follow-up"}
 
 email:
   subject_template: "..."
-  body_template: "..."
+  body_template: "..."      # supports {reminder_number}
 ```
 
 See [config/energy_assets.yaml](config/energy_assets.yaml) and
 [config/portfolio_companies.yaml](config/portfolio_companies.yaml) for the
 full working examples. Config loading fails fast with a specific error
-message (missing key, unknown rule type, bad severity) rather than silently
-producing a broken run — see [`config_schema.py`](src/compliance_tracker/config_schema.py).
+message (missing key, unknown rule type, bad severity, id column mismatch)
+rather than silently producing a broken run — see
+[`config_schema.py`](src/compliance_tracker/config_schema.py).
 
-## Excel tracker
+## Reminder history
 
-Three sheets, generated purely from config:
-
-1. **Summary** — one row per asset: status, critical/warning counts, and
-   responsible contact. Flagged assets sort to the top.
-2. **Asset Detail** — one row per asset with the raw record fields chosen in
-   `excel.detail_columns`.
-3. **Issues Log** — one row per rule violation (asset, rule, severity, field,
-   value, rendered message). This is the audit trail: every flag on the
-   Summary sheet traces back to specific rows here.
-
-## Email drafting
-
-For every flagged asset, a `.txt` draft is written to
-`output/<domain>/emails/` using the config's subject/body templates and the
-contact fields from that asset's record. **Draft-to-file is the only thing
-that happens by default.** Real sending
-([`send_drafted_emails`](src/compliance_tracker/email_drafter.py)) is a
-separate, explicit opt-in: it only runs if `EMAIL_SEND_MODE=live` plus all of
-`SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` are set as
-environment variables. No credentials are ever hardcoded, and CI never
-exercises the live-send path.
+Every `run`/`sync` appends to a persistent `reminder_log.csv` for every
+asset still flagged that cycle, so `Last Reminder Sent` and `Reminder Count`
+reflect real accumulated history rather than resetting each time — run the
+tool three times in a row and watch the count climb
+([`reminder_log.py`](src/compliance_tracker/reminder_log.py)). Email drafts
+reference this via `{reminder_number}`, so a draft can say "this is
+follow-up reminder #3."
 
 ## Tests
 
@@ -193,38 +270,49 @@ exercises the live-send path.
 pytest -v
 ```
 
-43 tests covering: each of the six rule types at their boundaries (e.g. a
-value exactly at a threshold passes, one unit past it fails), the CSV
-loader's error handling, end-to-end validation counts, config-driven Excel
-column mapping, draft-only-by-default email behavior (with SMTP mocked for
-the opt-in send path), and the domain-swap proof above. GitHub Actions
+67 tests covering: each of the seven rule types at their boundaries, the CSV
+loader's error handling, end-to-end validation counts, config-driven Tracker
+column mapping, notes-preservation across regeneration (both the local Excel
+path and the Google Sheets path, the latter via a fake in-memory client with
+no `gspread` dependency required), reminder-log accumulation, draft-only-by-
+default email behavior with SMTP mocked for the opt-in send path, and the
+domain-swap proof above. GitHub Actions
 ([.github/workflows/tests.yml](.github/workflows/tests.yml)) runs the suite
 on every push and PR against Python 3.11 and 3.13.
 
-## Roadmap (v2, not built)
+## Roadmap (not built)
 
-The current pipeline expects clean, structured CSV rows. A natural next step
-— explicitly **future work, not part of this repo today** — is an optional
-LLM-based extraction module that turns messy unstructured input (scanned
-PDFs, inspection reports, email threads) into the structured fields this
-validator already expects, then hands off to the exact same deterministic
-rule engine unchanged. The core compliance logic would stay 100%
-rule-based and auditable; the LLM's job would be limited to extraction, never
-to deciding compliance itself.
+Two things are deliberately out of scope today, both explicitly *future*
+rather than partially built:
+
+- **Reading values out of PDF content.** Today `document_on_file` confirms a
+  document was filed; a human still reads it and logs the expiry
+  date/percentage/status into the CSV. A natural next step is an LLM-based
+  extraction pass — strictly scoped to turning messy documents into
+  structured fields, handing off to the exact same deterministic rule engine
+  unchanged. The compliance decision itself would stay 100% rule-based and
+  auditable; the LLM's job would be extraction only, never judgment.
+- **Scheduled, unattended sending.** `sync --send` is a manual trigger today.
+  Running it on a schedule (cron / Task Scheduler) needs no code changes —
+  it's the same command — but hasn't been wired up or documented as a
+  first-class setup step yet.
 
 ## Project structure
 
 ```
 config/                          # one YAML per domain
-data/                            # synthetic sample CSVs
+data/                            # synthetic sample CSVs + document archives
+scripts/generate_sample_documents.py  # (re)generates the synthetic PDF archive
 src/compliance_tracker/
   loaders.py                     # AssetLoader ABC + CSVLoader
-  rules.py                       # the 6 generic rule-type checks
+  rules.py                       # the 7 generic rule-type checks
   validator.py                   # orchestrates load + rule evaluation
-  excel_report.py                # config-driven Excel generation
+  excel_report.py                # config-driven Tracker/Audit Log Excel generation
+  sheets_sync.py                 # syncs the same Tracker to a live Google Sheet
+  reminder_log.py                # persistent reminder history
   email_drafter.py               # draft-to-file, opt-in SMTP send
-  config_schema.py                # config loading + validation
-  cli.py                          # `python -m compliance_tracker run ...`
-tests/                            # pytest suite, incl. the domain-swap proof
-.github/workflows/tests.yml       # CI
+  config_schema.py               # config loading + validation
+  cli.py                         # `run` (local Excel) / `sync` (Google Sheet)
+tests/                           # pytest suite, incl. the domain-swap proof
+.github/workflows/tests.yml      # CI
 ```
