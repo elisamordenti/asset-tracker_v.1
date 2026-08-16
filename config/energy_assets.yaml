@@ -27,6 +27,8 @@ rules:
     type: document_on_file
     directory: "data/energy_assets_documents"
     filename_pattern: "{asset_id}_grid_connection_certificate.pdf"
+    extractable_fields:
+      - {field: certification_expiry, type: date, description: "Certification expiry date printed on the certificate"}
     severity: critical
     label: "Grid Cert on File"
     message: "Grid connection certificate not found in document archive (expected {value})"
@@ -43,6 +45,8 @@ rules:
     type: document_on_file
     directory: "data/energy_assets_documents"
     filename_pattern: "{asset_id}_insurance_certificate.pdf"
+    extractable_fields:
+      - {field: insurance_expiry, type: date, description: "Policy expiry date printed on the certificate"}
     severity: critical
     label: "Insurance Cert on File"
     message: "Insurance certificate not found in document archive (expected {value})"

@@ -17,6 +17,8 @@ from pathlib import Path
 from compliance_tracker.config_schema import AppConfig, ConfigError, load_config
 from compliance_tracker.email_drafter import draft_emails, send_drafted_emails
 from compliance_tracker.excel_report import generate_excel_report
+from compliance_tracker.extracted_values import apply_to_records
+from compliance_tracker.loaders import build_loader
 from compliance_tracker.reminder_log import ReminderSummary, append_entries, load_summary
 from compliance_tracker.validator import AssetResult, validate_assets
 
@@ -25,21 +27,38 @@ def _slugify(text: str) -> str:
     return "".join(c.lower() if c.isalnum() else "_" for c in text).strip("_")
 
 
-def _load_and_validate(config_path: str) -> tuple[AppConfig, list[AssetResult]] | int:
-    """Returns (config, results) on success, or an exit code on failure."""
+def _resolve_output_dir(config: AppConfig, output_dir: str | None) -> Path:
+    return Path(output_dir) if output_dir else Path("output") / _slugify(config.domain)
+
+
+def _load_and_validate(config_path: str, output_dir: str | None) -> tuple[AppConfig, Path, list[AssetResult]] | int:
+    """Returns (config, base_output, results) on success, or an exit code on
+    failure. Merges in the intake pipeline's extracted-values overlay
+    (output/<domain>/extracted_values.csv) on top of the base registry if
+    one exists, before running the unchanged deterministic rule engine."""
     try:
         config = load_config(config_path)
     except ConfigError as e:
         print(f"Config error: {e}", file=sys.stderr)
         return 1
 
+    base_output = _resolve_output_dir(config, output_dir)
+
     try:
-        results = validate_assets(config)
+        base_records = build_loader(config.source).load()
     except (FileNotFoundError, ValueError) as e:
         print(f"Data error: {e}", file=sys.stderr)
         return 1
 
-    return config, results
+    extracted_values_path = base_output / "extracted_values.csv"
+    records = (
+        apply_to_records(base_records, extracted_values_path, config.source.id_field)
+        if extracted_values_path.exists()
+        else base_records
+    )
+
+    results = validate_assets(config, records=records)
+    return config, base_output, results
 
 
 def _update_reminder_log(base_output: Path, results: list[AssetResult]) -> tuple[Path, dict[str, ReminderSummary]]:
@@ -50,13 +69,10 @@ def _update_reminder_log(base_output: Path, results: list[AssetResult]) -> tuple
 
 
 def run(config_path: str, output_dir: str | None = None) -> int:
-    loaded = _load_and_validate(config_path)
+    loaded = _load_and_validate(config_path, output_dir)
     if isinstance(loaded, int):
         return loaded
-    config, results = loaded
-
-    domain_slug = _slugify(config.domain)
-    base_output = Path(output_dir) if output_dir else Path("output") / domain_slug
+    config, base_output, results = loaded
 
     flagged = [r for r in results if r.violations]
     log_path, reminder_summary = _update_reminder_log(base_output, results)
@@ -74,10 +90,10 @@ def run(config_path: str, output_dir: str | None = None) -> int:
 
 
 def sync(config_path: str, sheet_id: str, worksheet: str, send: bool, output_dir: str | None = None) -> int:
-    loaded = _load_and_validate(config_path)
+    loaded = _load_and_validate(config_path, output_dir)
     if isinstance(loaded, int):
         return loaded
-    config, results = loaded
+    config, base_output, results = loaded
 
     credentials_path = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_PATH")
     if not credentials_path:
@@ -99,9 +115,6 @@ def sync(config_path: str, sheet_id: str, worksheet: str, send: bool, output_dir
             file=sys.stderr,
         )
         return 1
-
-    domain_slug = _slugify(config.domain)
-    base_output = Path(output_dir) if output_dir else Path("output") / domain_slug
 
     flagged = [r for r in results if r.violations]
     log_path, reminder_summary = _update_reminder_log(base_output, results)
@@ -131,6 +144,52 @@ def sync(config_path: str, sheet_id: str, worksheet: str, send: bool, output_dir
     return 0
 
 
+def intake(config_path: str, inbox_dir: str, output_dir: str | None = None) -> int:
+    try:
+        config = load_config(config_path)
+    except ConfigError as e:
+        print(f"Config error: {e}", file=sys.stderr)
+        return 1
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print(
+            "Intake error: ANTHROPIC_API_KEY is not set. Intake uses Claude to classify "
+            "and extract structured values from incoming documents -- set this env var "
+            "to a valid Anthropic API key.",
+            file=sys.stderr,
+        )
+        return 1
+
+    base_output = _resolve_output_dir(config, output_dir)
+
+    try:
+        from compliance_tracker.intake import run_intake
+        summary = run_intake(
+            config,
+            inbox_dir=inbox_dir,
+            extracted_values_path=base_output / "extracted_values.csv",
+            log_path=base_output / "extraction_log.csv",
+        )
+    except ImportError:
+        print(
+            "Intake error: the 'llm' extra isn't installed. "
+            'Run: pip install -e ".[llm]"',
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Domain: {config.domain}")
+    print(f"Inbox: {inbox_dir}")
+    print(f"Filed: {len(summary.filed)}")
+    print(f"Needs review: {len(summary.needs_review)}")
+    for outcome in summary.needs_review:
+        print(
+            f"  - {outcome.source_filename}: best guess asset={outcome.asset_id}, "
+            f"doc_type={outcome.document_type_rule_id}, confidence={outcome.confidence}"
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="compliance_tracker")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -151,12 +210,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     sync_parser.add_argument("--output-dir", default=None, help="Override the output directory (default: output/<domain>)")
 
+    intake_parser = subparsers.add_parser(
+        "intake", help="Classify and extract values from raw incoming documents via Claude, filing confident matches"
+    )
+    intake_parser.add_argument("--config", required=True, help="Path to a domain YAML config")
+    intake_parser.add_argument("--inbox-dir", required=True, help="Folder of raw incoming files to process")
+    intake_parser.add_argument("--output-dir", default=None, help="Override the output directory (default: output/<domain>)")
+
     args = parser.parse_args(argv)
 
     if args.command == "run":
         return run(args.config, args.output_dir)
     if args.command == "sync":
         return sync(args.config, args.sheet_id, args.worksheet, args.send, args.output_dir)
+    if args.command == "intake":
+        return intake(args.config, args.inbox_dir, args.output_dir)
 
     parser.print_help()
     return 1

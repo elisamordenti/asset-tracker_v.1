@@ -107,6 +107,51 @@ PORTFOLIO_MISSING = {
 PORTFOLIO_COMPANY_IDS = [f"PC-{i:03d}" for i in range(1, 16)]
 
 
+def write_inbox_doc(directory: Path, filename: str, lines: list[str]) -> None:
+    """Unlike write_doc(), the filename here deliberately does NOT follow the
+    {asset_id}_{doc_type}.pdf convention -- these simulate whatever raw name
+    a client actually attached to an email, which is exactly what the
+    `intake` command's classification step exists to sort out."""
+    directory.mkdir(parents=True, exist_ok=True)
+    full_lines = lines + [
+        "",
+        "This is a synthetic document generated for a portfolio project demo.",
+        "No real client, asset, or company data is contained in this file.",
+    ]
+    (directory / filename).write_bytes(build_minimal_pdf(full_lines))
+
+
+# Raw "as received from a client" inbox samples: messy filenames, no
+# {asset_id}_{doc_type}.pdf convention, filling in some of the gaps left in
+# ENERGY_MISSING / PORTFOLIO_MISSING above -- so running `intake` against
+# these has real, useful classification/extraction work to do.
+ENERGY_INBOX = [
+    (
+        "IMG_20260810_permit_scan.pdf",
+        ["Operating Permit", "Asset / Entity: AST-006"],
+    ),
+    (
+        "Windridge_GridCert_Renewal.pdf",
+        ["Grid Connection Certificate", "Asset / Entity: AST-002", "Certification Expiry: 2028-01-01"],
+    ),
+    (
+        "scan_insurance_AST003.pdf",
+        ["Insurance Certificate", "Asset / Entity: AST-003", "Policy Expiry: 2028-06-01"],
+    ),
+]
+
+PORTFOLIO_INBOX = [
+    (
+        "PC005_Audit_2026.pdf",
+        ["Audited Financial Statements", "Entity: PC-005"],
+    ),
+    (
+        "captable_export_oct.pdf",
+        ["Capitalization Table Export", "Entity: PC-004"],
+    ),
+]
+
+
 def main() -> None:
     energy_dir = REPO_ROOT / "data" / "energy_assets_documents"
     for asset_id in ENERGY_ASSET_IDS:
@@ -122,8 +167,18 @@ def main() -> None:
                 continue
             write_doc(portfolio_dir, f"{company_id}_{doc_type}.pdf", title, company_id)
 
+    energy_inbox_dir = REPO_ROOT / "data" / "energy_assets_inbox"
+    for filename, lines in ENERGY_INBOX:
+        write_inbox_doc(energy_inbox_dir, filename, lines)
+
+    portfolio_inbox_dir = REPO_ROOT / "data" / "portfolio_companies_inbox"
+    for filename, lines in PORTFOLIO_INBOX:
+        write_inbox_doc(portfolio_inbox_dir, filename, lines)
+
     print(f"Wrote energy asset documents to {energy_dir}")
     print(f"Wrote portfolio company documents to {portfolio_dir}")
+    print(f"Wrote energy inbox samples to {energy_inbox_dir}")
+    print(f"Wrote portfolio inbox samples to {portfolio_inbox_dir}")
 
 
 if __name__ == "__main__":

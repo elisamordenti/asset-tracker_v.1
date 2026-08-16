@@ -43,9 +43,14 @@ class AssetResult:
         }
 
 
-def validate_assets(config: AppConfig) -> list[AssetResult]:
-    loader = build_loader(config.source)
-    records = loader.load()
+def validate_assets(config: AppConfig, records: list[dict[str, str]] | None = None) -> list[AssetResult]:
+    """If records is omitted, loads fresh from config.source as before. Pass
+    records explicitly to validate against a pre-loaded set -- e.g. the
+    base registry merged with the intake pipeline's extracted-values
+    overlay (see extracted_values.apply_to_records)."""
+    if records is None:
+        loader = build_loader(config.source)
+        records = loader.load()
 
     results = []
     for record in records:
