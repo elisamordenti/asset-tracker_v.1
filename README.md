@@ -3,9 +3,12 @@
 A config-driven engine that turns a folder of raw incoming documents into
 structured, validated data: it classifies and extracts values via Claude,
 checks hundreds of distributed "assets" against a compliance rulebook, keeps
-a living tracker up to date (locally in Excel, or synced to a shared Google
-Sheet), and drafts — or sends — follow-up emails for whatever's missing.
-Zero code changes required to point it at a completely different domain.
+a living tracker up to date, and drafts — or sends — follow-up emails for
+whatever's missing. The primary interface is a small Streamlit web app
+(`app.py`, backed by Supabase) where you upload documents, edit notes, and
+send reminders directly; local Excel and Google Sheets export remain
+available as CLI commands. Zero code changes required to point it at a
+completely different domain.
 
 ## The problem this replaces
 
@@ -90,6 +93,70 @@ pytest
 Each run writes `output/<domain>/tracker.xlsx`, drafted follow-up emails to
 `output/<domain>/emails/*.txt`, and a `reminder_log.csv`. `output/` is
 gitignored — nothing generated is committed.
+
+## The web app: the primary interface
+
+```bash
+pip install -e ".[webapp]"
+```
+
+Create a free project at [supabase.com](https://supabase.com) (no card
+required), run this in its SQL editor:
+
+```sql
+create table assets (
+  domain text not null,
+  asset_id text not null,
+  record jsonb not null,
+  notes jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (domain, asset_id)
+);
+
+create table reminder_log (
+  id bigserial primary key,
+  domain text not null,
+  asset_id text not null,
+  sent_date date not null,
+  reminder_number int not null
+);
+
+create table extraction_log (
+  id bigserial primary key,
+  domain text not null,
+  source_filename text not null,
+  outcome text not null,
+  asset_id text,
+  document_type text,
+  confidence text,
+  logged_at timestamptz not null default now()
+);
+```
+
+then set `SUPABASE_URL` and `SUPABASE_KEY` (the project's service-role key)
+as environment variables and run:
+
+```bash
+streamlit run app.py
+```
+
+This is the intended day-to-day interface: a domain selector, a "Sync from
+registry" button that pulls the CSV (plus any `extracted_values.csv`
+overlay) into the database, the tracker itself as a live editable table
+(notes save straight back to Supabase — no export/re-import step), a
+document upload box that runs the same classify/extract pipeline as
+`intake` in-page, a "Draft reminders" button, and an "Export to Excel"
+button for when a bank/tender-ready file is still needed.
+
+Only the `record` column is ever touched by a sync — `notes` is exclusively
+yours, same non-destructive-merge principle as the Excel/Sheets notes
+column, just backed by a real database instead of reading a file back
+before overwriting it. `database.py` is fully unit-tested against a fake
+in-memory client (`tests/test_database.py`) — no live Supabase project or
+network access needed to run the suite; only to actually use the app.
+
+The CLI paths below (`run` / `sync`) still work exactly as before — the web
+app is additive, not a replacement.
 
 ## The Tracker: one scannable matrix, not three cross-referenced sheets
 
@@ -182,7 +249,11 @@ unit-tested against an injectable client — no network calls or
 `anthropic`/`pypdf` install required to run the test suite (only to actually
 call `intake` for real, which needs `ANTHROPIC_API_KEY` set).
 
-## Two ways to run it: local Excel, or a live Google Sheet
+## CLI alternatives: local Excel, or a live Google Sheet
+
+The web app above is the primary interface; these two commands remain for
+cases that don't need it (CI-friendly checks, a quick local export, no
+Supabase project set up yet).
 
 **`run`** — zero external setup, writes a local `.xlsx`. This is the
 zero-dependency path used for the domain-swap proof below.
@@ -317,15 +388,16 @@ follow-up reminder #3."
 pytest -v
 ```
 
-82 tests covering: each of the seven rule types at their boundaries, the CSV
+87 tests covering: each of the seven rule types at their boundaries, the CSV
 loader's error handling, end-to-end validation counts, config-driven Tracker
-column mapping, notes-preservation across regeneration (both the local Excel
-path and the Google Sheets path, the latter via a fake in-memory client with
-no `gspread` dependency required), reminder-log accumulation, draft-only-by-
-default email behavior with SMTP mocked for the opt-in send path, document
-classification/extraction and the intake pipeline (both against fake
-LLM clients — no network calls or `anthropic` install required), the
-extracted-values overlay, and the domain-swap proof above. GitHub Actions
+column mapping, notes-preservation across regeneration (the local Excel
+path, the Google Sheets path, and the Supabase path — the latter two each
+via a fake in-memory client, no `gspread`/`supabase` install required),
+reminder-log accumulation, draft-only-by-default email behavior with SMTP
+mocked for the opt-in send path, document classification/extraction and the
+intake pipeline (against fake LLM clients — no network calls or
+`anthropic` install required), the extracted-values overlay, and the
+domain-swap proof above. GitHub Actions
 ([.github/workflows/tests.yml](.github/workflows/tests.yml)) runs the suite
 on every push and PR against Python 3.11 and 3.13.
 
@@ -334,6 +406,11 @@ on every push and PR against Python 3.11 and 3.13.
 One thing is deliberately out of scope today, explicitly *future* rather
 than partially built:
 
+- **Deploying the web app to a public URL.** `app.py` runs locally today
+  (`streamlit run app.py`); the data already lives in Supabase rather than
+  a local file specifically so this doesn't require a second migration —
+  deploying the app itself (e.g. Streamlit Community Cloud) is a separate,
+  later step, not needed for local day-to-day use.
 - **Scheduled, unattended sending.** `sync --send` is a manual trigger today.
   Running it on a schedule (cron / Task Scheduler) needs no code changes —
   it's the same command — but hasn't been wired up or documented as a
@@ -342,6 +419,7 @@ than partially built:
 ## Project structure
 
 ```
+app.py                           # Streamlit web app -- the primary interface
 config/                          # one YAML per domain
 data/                            # synthetic sample CSVs, document archives, inbox samples
 scripts/generate_sample_documents.py  # (re)generates the synthetic PDF archive + inbox samples
@@ -351,10 +429,11 @@ src/compliance_tracker/
   validator.py                   # orchestrates load + rule evaluation
   excel_report.py                # config-driven Tracker/Audit Log Excel generation
   sheets_sync.py                 # syncs the same Tracker to a live Google Sheet
-  reminder_log.py                # persistent reminder history
+  database.py                    # syncs the same Tracker to Supabase, backs the web app
+  reminder_log.py                # persistent reminder history (CSV-backed CLI path)
   extraction.py                  # LLM classify/extract from a single document (injectable client)
   extracted_values.py            # persistent overlay of extracted values on the base registry
-  intake.py                      # orchestrates inbox -> archive + extracted_values.csv
+  intake.py                      # orchestrates inbox -> archive + extracted_values.csv (CLI path)
   email_drafter.py               # draft-to-file, opt-in SMTP send
   config_schema.py               # config loading + validation
   cli.py                         # `run` (local Excel) / `sync` (Google Sheet) / `intake` (LLM extraction)

@@ -16,6 +16,7 @@ dependencies = [
 dev = ["pytest>=8.0"]
 sheets = ["gspread>=6.0", "google-auth>=2.0"]
 llm = ["anthropic>=0.40", "pydantic>=2.0", "pypdf>=4.0"]
+webapp = ["streamlit>=1.30", "supabase>=2.0", "pandas>=2.0"]
 
 [project.scripts]
 compliance-tracker = "compliance_tracker.cli:main"
