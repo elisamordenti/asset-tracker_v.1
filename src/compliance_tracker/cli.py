@@ -16,6 +16,7 @@ from pathlib import Path
 from compliance_tracker.config_schema import ConfigError, load_config
 from compliance_tracker.email_drafter import draft_emails
 from compliance_tracker.excel_report import generate_excel_report
+from compliance_tracker.reminder_log import append_entries, load_summary
 from compliance_tracker.validator import validate_assets
 
 
@@ -39,15 +40,21 @@ def run(config_path: str, output_dir: str | None = None) -> int:
     domain_slug = _slugify(config.domain)
     base_output = Path(output_dir) if output_dir else Path("output") / domain_slug
 
-    excel_path = generate_excel_report(config, results, base_output / "tracker.xlsx")
-    drafts = draft_emails(config, results, base_output / "emails")
-
     flagged = [r for r in results if r.violations]
+
+    log_path = base_output / "reminder_log.csv"
+    append_entries(log_path, [r.asset_id for r in flagged])
+    reminder_summary = load_summary(log_path)
+
+    excel_path = generate_excel_report(config, results, reminder_summary, base_output / "tracker.xlsx")
+    drafts = draft_emails(config, results, reminder_summary, base_output / "emails")
+
     print(f"Domain: {config.domain}")
     print(f"Assets loaded: {len(results)}")
     print(f"Flagged: {len(flagged)} ({len(results) - len(flagged)} compliant)")
     print(f"Excel tracker: {excel_path}")
     print(f"Email drafts: {len(drafts)} written to {base_output / 'emails'}")
+    print(f"Reminder log: {log_path}")
     return 0
 
 

@@ -19,20 +19,39 @@ rules:
     type: allowed_values
     values: ["yes"]
     severity: critical
+    label: "Financials Audited"
     message: "Financial statements are not audited (reported: '{value}')"
+
+  - id: audited_financials_doc_on_file
+    type: document_on_file
+    directory: "data/portfolio_companies_documents"
+    filename_pattern: "{company_id}_audited_financials_report.pdf"
+    severity: critical
+    label: "Audit Report on File"
+    message: "Audited financial statements not found in document archive (expected {value})"
 
   - id: cap_table_current
     field: cap_table_current
     type: allowed_values
     values: ["yes"]
     severity: critical
+    label: "Cap Table Current"
     message: "Cap table has not been confirmed current (reported: '{value}')"
+
+  - id: cap_table_doc_on_file
+    type: document_on_file
+    directory: "data/portfolio_companies_documents"
+    filename_pattern: "{company_id}_cap_table_export.pdf"
+    severity: critical
+    label: "Cap Table Export on File"
+    message: "Cap table export not found in document archive (expected {value})"
 
   - id: board_update_recent
     field: last_board_update
     type: not_expired
     max_age_days: 45
     severity: warning
+    label: "Last Board Update"
     message: "Last board update was {value}, more than 45 days ago"
 
   - id: runway_min
@@ -40,46 +59,48 @@ rules:
     type: min_value
     min: 6
     severity: critical
+    label: "Runway (months)"
     message: "Runway is {value} months, below the 6-month minimum"
 
   - id: has_data_room_link
     field: data_room_ref
     type: required
     severity: warning
+    label: "Data Room Ref"
     message: "Missing data room reference link"
+
+  - id: data_room_ref_format
+    field: data_room_ref
+    type: regex_match
+    pattern: "^DR-[0-9]{3,}$"
+    severity: warning
+    label: "Data Room Ref Format"
+    message: "Data room reference '{value}' does not match expected format DR-###"
 
   - id: stage_valid
     field: funding_stage
     type: allowed_values
     values: ["pre-seed", "seed", "series-a", "series-b"]
     severity: warning
+    label: "Funding Stage"
     message: "Funding stage '{value}' is not a recognized stage"
 
 excel:
-  summary_columns:
-    - {field: company_id, label: "Company ID"}
-    - {field: company_name, label: "Company Name"}
-    - {field: compliance_status, label: "Status"}
-    - {field: critical_count, label: "Critical Issues"}
-    - {field: warning_count, label: "Warnings"}
-    - {field: founder_name, label: "Founder Contact"}
-
-  detail_columns:
+  info_columns:
     - {field: company_id, label: "Company ID"}
     - {field: company_name, label: "Company Name"}
     - {field: funding_stage, label: "Stage"}
-    - {field: runway_months, label: "Runway (months)"}
-    - {field: last_board_update, label: "Last Board Update"}
-    - {field: cap_table_current, label: "Cap Table Current"}
-    - {field: audited_financials, label: "Audited Financials"}
-    - {field: data_room_ref, label: "Data Room Ref"}
+    - {field: founder_name, label: "Founder Contact"}
+  notes_columns:
+    - {field: notes, label: "Notes / Follow-up"}
 
 email:
   subject_template: "Action Required: Reporting Items for {company_name}"
   body_template: |
     Hi {founder_name},
 
-    Ahead of our next review, the following reporting items need attention for {company_name} ({company_id}):
+    This is follow-up reminder #{reminder_number} ahead of our next review --
+    the following reporting items still need attention for {company_name} ({company_id}):
 
     {issues_list}
 

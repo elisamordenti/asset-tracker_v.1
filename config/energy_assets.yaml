@@ -1,6 +1,7 @@
 # Domain config for solar/wind asset compliance tracking.
-# Everything here is data, not code: swap this file (and the CSV it points
-# to) for a different domain and the engine behaves identically.
+# Everything here is data, not code: swap this file (and the CSV/document
+# archive it points to) for a different domain and the engine behaves
+# identically.
 
 domain: "Energy Assets"
 
@@ -19,67 +20,81 @@ rules:
     type: not_expired
     max_age_days: 0
     severity: critical
+    label: "Grid Cert Expiry"
     message: "Grid connection certification expired on {value}"
+
+  - id: cert_doc_on_file
+    type: document_on_file
+    directory: "data/energy_assets_documents"
+    filename_pattern: "{asset_id}_grid_connection_certificate.pdf"
+    severity: critical
+    label: "Grid Cert on File"
+    message: "Grid connection certificate not found in document archive (expected {value})"
 
   - id: insurance_current
     field: insurance_expiry
     type: not_expired
     max_age_days: 0
     severity: critical
+    label: "Insurance Expiry"
     message: "Insurance policy expired on {value}"
+
+  - id: insurance_doc_on_file
+    type: document_on_file
+    directory: "data/energy_assets_documents"
+    filename_pattern: "{asset_id}_insurance_certificate.pdf"
+    severity: critical
+    label: "Insurance Cert on File"
+    message: "Insurance certificate not found in document archive (expected {value})"
+
+  - id: permit_doc_on_file
+    type: document_on_file
+    directory: "data/energy_assets_documents"
+    filename_pattern: "{asset_id}_permit.pdf"
+    severity: critical
+    label: "Permit on File"
+    message: "Operating permit not found in document archive (expected {value})"
 
   - id: margin_min
     field: margin_pct
     type: min_value
     min: 5
     severity: warning
+    label: "Margin %"
     message: "Margin {value}% is below the 5% minimum threshold for financing"
+
+  - id: downtime_max
+    field: downtime_hours
+    type: max_value
+    max: 100
+    severity: warning
+    label: "Downtime (hrs/yr)"
+    message: "Downtime {value} hrs/yr exceeds the 100 hr maximum"
 
   - id: maintenance_status_valid
     field: maintenance_status
     type: allowed_values
     values: ["current", "scheduled"]
     severity: warning
+    label: "Maintenance Status"
     message: "Maintenance status '{value}' is not acceptable (must be current or scheduled)"
 
-  - id: has_permit_doc
-    field: permit_doc_ref
-    type: required
-    severity: critical
-    message: "Missing permit document reference"
-
-  - id: permit_doc_format
-    field: permit_doc_ref
-    type: regex_match
-    pattern: "^PMT-[0-9]{4,}$"
-    severity: warning
-    message: "Permit document reference '{value}' does not match expected format PMT-####"
-
 excel:
-  summary_columns:
-    - {field: asset_id, label: "Asset ID"}
-    - {field: asset_name, label: "Asset Name"}
-    - {field: compliance_status, label: "Status"}
-    - {field: critical_count, label: "Critical Issues"}
-    - {field: warning_count, label: "Warnings"}
-    - {field: contact_name, label: "Responsible Contact"}
-
-  detail_columns:
+  info_columns:
     - {field: asset_id, label: "Asset ID"}
     - {field: asset_name, label: "Asset Name"}
     - {field: location, label: "Location"}
-    - {field: certification_expiry, label: "Certification Expiry"}
-    - {field: insurance_expiry, label: "Insurance Expiry"}
-    - {field: margin_pct, label: "Margin %"}
-    - {field: maintenance_status, label: "Maintenance Status"}
-    - {field: permit_doc_ref, label: "Permit Doc Ref"}
+    - {field: contact_name, label: "Responsible Contact"}
+  notes_columns:
+    - {field: notes, label: "Notes / Follow-up"}
 
 email:
   subject_template: "Action Required: Compliance Issues for {asset_name}"
   body_template: |
     Hi {contact_name},
 
-    Our latest compliance review flagged the following issues for {asset_name} ({asset_id}):
+    This is follow-up reminder #{reminder_number} regarding compliance issues
+    for {asset_name} ({asset_id}):
 
     {issues_list}
 

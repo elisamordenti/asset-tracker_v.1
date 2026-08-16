@@ -18,10 +18,7 @@ def build_config(tmp_path, csv_content, rules):
         source=SourceConfig(type="csv", path=str(csv_path), id_field="asset_id"),
         contact=ContactConfig(name_field="contact_name", email_field="contact_email"),
         rules=rules,
-        excel=ExcelConfig(
-            summary_columns=[ColumnConfig(field="asset_id", label="ID")],
-            detail_columns=[ColumnConfig(field="asset_id", label="ID")],
-        ),
+        excel=ExcelConfig(info_columns=[ColumnConfig(field="asset_id", label="ID")]),
         email=EmailConfig(subject_template="Subject {asset_id}", body_template="{issues_list}"),
     )
 
@@ -31,7 +28,7 @@ def test_validate_assets_marks_compliant_asset_with_no_violations(tmp_path):
     rules = [
         RuleConfig(
             id="margin_min", field="margin_pct", type="min_value", severity="warning",
-            message="low margin", params={"min": 5},
+            message="low margin", label="Margin", params={"min": 5},
         )
     ]
     config = build_config(tmp_path, csv_content, rules)
@@ -51,11 +48,11 @@ def test_validate_assets_flags_asset_and_counts_by_severity(tmp_path):
     rules = [
         RuleConfig(
             id="margin_min", field="margin_pct", type="min_value", severity="warning",
-            message="low margin", params={"min": 5},
+            message="low margin", label="Margin", params={"min": 5},
         ),
         RuleConfig(
             id="has_permit", field="permit_doc_ref", type="required", severity="critical",
-            message="missing permit", params={},
+            message="missing permit", label="Permit", params={},
         ),
     ]
     config = build_config(tmp_path, csv_content, rules)
@@ -78,7 +75,7 @@ def test_validate_assets_handles_multiple_assets_independently(tmp_path):
     rules = [
         RuleConfig(
             id="margin_min", field="margin_pct", type="min_value", severity="warning",
-            message="low margin", params={"min": 5},
+            message="low margin", label="Margin", params={"min": 5},
         ),
     ]
     config = build_config(tmp_path, csv_content, rules)
@@ -94,7 +91,7 @@ def test_display_fields_includes_computed_columns(tmp_path):
     rules = [
         RuleConfig(
             id="margin_min", field="margin_pct", type="min_value", severity="warning",
-            message="low margin", params={"min": 5},
+            message="low margin", label="Margin", params={"min": 5},
         ),
     ]
     config = build_config(tmp_path, csv_content, rules)

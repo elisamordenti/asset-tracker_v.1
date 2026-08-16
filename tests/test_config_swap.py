@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 from compliance_tracker.config_schema import load_config
 from compliance_tracker.email_drafter import draft_emails
 from compliance_tracker.excel_report import generate_excel_report
+from compliance_tracker.reminder_log import append_entries, load_summary
 from compliance_tracker.validator import validate_assets
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -19,8 +20,14 @@ def run_domain(monkeypatch, tmp_path, config_relpath):
     monkeypatch.chdir(REPO_ROOT)
     config = load_config(config_relpath)
     results = validate_assets(config)
-    excel_path = generate_excel_report(config, results, tmp_path / "tracker.xlsx")
-    drafts = draft_emails(config, results, tmp_path / "emails")
+
+    log_path = tmp_path / "reminder_log.csv"
+    flagged_ids = [r.asset_id for r in results if r.violations]
+    append_entries(log_path, flagged_ids)
+    reminder_summary = load_summary(log_path)
+
+    excel_path = generate_excel_report(config, results, reminder_summary, tmp_path / "tracker.xlsx")
+    drafts = draft_emails(config, results, reminder_summary, tmp_path / "emails")
     return config, results, excel_path, drafts
 
 
@@ -54,14 +61,20 @@ def test_both_domains_produce_domain_specific_excel_columns(monkeypatch, tmp_pat
         monkeypatch, tmp_path / "portfolio", "config/portfolio_companies.yaml"
     )
 
-    energy_headers = [c.value for c in load_workbook(energy_excel)["Summary"][1]]
-    portfolio_headers = [c.value for c in load_workbook(portfolio_excel)["Summary"][1]]
+    energy_headers = [c.value for c in load_workbook(energy_excel)["Tracker"][1]]
+    portfolio_headers = [c.value for c in load_workbook(portfolio_excel)["Tracker"][1]]
 
     assert energy_headers == [
-        "Asset ID", "Asset Name", "Status", "Critical Issues", "Warnings", "Responsible Contact",
+        "Asset ID", "Asset Name", "Location", "Responsible Contact",
+        "Grid Cert Expiry", "Grid Cert on File", "Insurance Expiry", "Insurance Cert on File",
+        "Permit on File", "Margin %", "Downtime (hrs/yr)", "Maintenance Status",
+        "Next Deadline", "Last Reminder Sent", "Reminder Count", "Status", "Notes / Follow-up",
     ]
     assert portfolio_headers == [
-        "Company ID", "Company Name", "Status", "Critical Issues", "Warnings", "Founder Contact",
+        "Company ID", "Company Name", "Stage", "Founder Contact",
+        "Financials Audited", "Audit Report on File", "Cap Table Current", "Cap Table Export on File",
+        "Last Board Update", "Runway (months)", "Data Room Ref", "Data Room Ref Format", "Funding Stage",
+        "Next Deadline", "Last Reminder Sent", "Reminder Count", "Status", "Notes / Follow-up",
     ]
     assert energy_headers != portfolio_headers
 

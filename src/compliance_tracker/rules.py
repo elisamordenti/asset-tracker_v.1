@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any, Callable
 
 from compliance_tracker.config_schema import RuleConfig
@@ -20,17 +21,17 @@ from compliance_tracker.config_schema import RuleConfig
 @dataclass
 class RuleResult:
     rule_id: str
-    field: str
+    field: str | None
     severity: str
     value: str
     message: str
 
 
-def _check_required(value: str, params: dict[str, Any]) -> bool:
+def _check_required(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
     return bool(value and value.strip())
 
 
-def _check_not_expired(value: str, params: dict[str, Any]) -> bool:
+def _check_not_expired(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
     if not value or not value.strip():
         return False
     try:
@@ -42,7 +43,7 @@ def _check_not_expired(value: str, params: dict[str, Any]) -> bool:
     return days_since_expiry <= max_age_days
 
 
-def _check_min_value(value: str, params: dict[str, Any]) -> bool:
+def _check_min_value(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
     try:
         number = float(value)
     except (ValueError, TypeError):
@@ -50,7 +51,7 @@ def _check_min_value(value: str, params: dict[str, Any]) -> bool:
     return number >= params["min"]
 
 
-def _check_max_value(value: str, params: dict[str, Any]) -> bool:
+def _check_max_value(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
     try:
         number = float(value)
     except (ValueError, TypeError):
@@ -58,32 +59,52 @@ def _check_max_value(value: str, params: dict[str, Any]) -> bool:
     return number <= params["max"]
 
 
-def _check_allowed_values(value: str, params: dict[str, Any]) -> bool:
+def _check_allowed_values(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
     return value in params["values"]
 
 
-def _check_regex_match(value: str, params: dict[str, Any]) -> bool:
+def _check_regex_match(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
     if not value:
         return False
     return re.match(params["pattern"], value) is not None
 
 
-RULE_CHECKS: dict[str, Callable[[str, dict[str, Any]], bool]] = {
+def _resolve_expected_filename(params: dict[str, Any], record: dict[str, str]) -> str:
+    return params["filename_pattern"].format(**record)
+
+
+def _check_document_on_file(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
+    expected_name = _resolve_expected_filename(params, record)
+    return (Path(params["directory"]) / expected_name).exists()
+
+
+RULE_CHECKS: dict[str, Callable[[str, dict[str, Any], dict[str, str]], bool]] = {
     "required": _check_required,
     "not_expired": _check_not_expired,
     "min_value": _check_min_value,
     "max_value": _check_max_value,
     "allowed_values": _check_allowed_values,
     "regex_match": _check_regex_match,
+    "document_on_file": _check_document_on_file,
 }
+
+
+def resolve_value(rule: RuleConfig, record: dict[str, str]) -> str:
+    """The value a rule checks for a given record -- the raw field value for
+    field-based rules, or the resolved expected filename for document_on_file.
+    Exposed so callers (e.g. the tracker sheet) can display what a rule
+    checked regardless of whether it passed or failed."""
+    if rule.type == "document_on_file":
+        return _resolve_expected_filename(rule.params, record)
+    return record.get(rule.field, "")
 
 
 def evaluate_rule(rule: RuleConfig, record: dict[str, str]) -> RuleResult | None:
     """Return a RuleResult if the record fails the rule, None if it passes."""
-    value = record.get(rule.field, "")
     check_fn = RULE_CHECKS[rule.type]
+    value = resolve_value(rule, record)
 
-    if check_fn(value, rule.params):
+    if check_fn(value, rule.params, record):
         return None
 
     # record is spread first so the freshly-read `value` always wins if a

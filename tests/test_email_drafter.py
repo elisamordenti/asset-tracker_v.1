@@ -12,6 +12,7 @@ from compliance_tracker.config_schema import (
     SourceConfig,
 )
 from compliance_tracker.email_drafter import draft_emails, send_drafted_emails
+from compliance_tracker.reminder_log import ReminderSummary
 from compliance_tracker.validator import validate_assets
 
 
@@ -23,13 +24,10 @@ def build_config(tmp_path, csv_content, rules):
         source=SourceConfig(type="csv", path=str(csv_path), id_field="asset_id"),
         contact=ContactConfig(name_field="contact_name", email_field="contact_email"),
         rules=rules,
-        excel=ExcelConfig(
-            summary_columns=[ColumnConfig(field="asset_id", label="ID")],
-            detail_columns=[ColumnConfig(field="asset_id", label="ID")],
-        ),
+        excel=ExcelConfig(info_columns=[ColumnConfig(field="asset_id", label="ID")]),
         email=EmailConfig(
             subject_template="Action Required: {asset_id}",
-            body_template="Hi {contact_name},\n\n{issues_list}\n",
+            body_template="Hi {contact_name}, (reminder #{reminder_number})\n\n{issues_list}\n",
         ),
     )
 
@@ -42,12 +40,12 @@ def test_draft_emails_only_writes_for_flagged_assets(tmp_path):
     )
     rules = [
         RuleConfig(id="margin_min", field="margin_pct", type="min_value", severity="warning",
-                   message="Margin {value}% too low", params={"min": 5}),
+                   message="Margin {value}% too low", label="Margin", params={"min": 5}),
     ]
     config = build_config(tmp_path, csv_content, rules)
     results = validate_assets(config)
 
-    drafts = draft_emails(config, results, tmp_path / "emails")
+    drafts = draft_emails(config, results, {}, tmp_path / "emails")
 
     assert len(drafts) == 1
     assert drafts[0].asset_id == "AST-2"
@@ -59,16 +57,31 @@ def test_draft_email_content_includes_contact_and_issues(tmp_path):
     csv_content = "asset_id,margin_pct,contact_name,contact_email\nAST-1,1,Ben,ben@example.com\n"
     rules = [
         RuleConfig(id="margin_min", field="margin_pct", type="min_value", severity="warning",
-                   message="Margin {value}% too low", params={"min": 5}),
+                   message="Margin {value}% too low", label="Margin", params={"min": 5}),
     ]
     config = build_config(tmp_path, csv_content, rules)
     results = validate_assets(config)
-    drafts = draft_emails(config, results, tmp_path / "emails")
+    drafts = draft_emails(config, results, {}, tmp_path / "emails")
 
     content = drafts[0].file_path.read_text(encoding="utf-8")
     assert "Ben" in content
     assert "ben@example.com" in content
     assert "Margin 1% too low" in content
+
+
+def test_draft_email_uses_reminder_number_from_summary(tmp_path):
+    csv_content = "asset_id,margin_pct,contact_name,contact_email\nAST-1,1,Ben,ben@example.com\n"
+    rules = [
+        RuleConfig(id="margin_min", field="margin_pct", type="min_value", severity="warning",
+                   message="too low", label="Margin", params={"min": 5}),
+    ]
+    config = build_config(tmp_path, csv_content, rules)
+    results = validate_assets(config)
+    reminder_summary = {"AST-1": ReminderSummary(last_sent="2026-08-15", count=3)}
+    drafts = draft_emails(config, results, reminder_summary, tmp_path / "emails")
+
+    content = drafts[0].file_path.read_text(encoding="utf-8")
+    assert "reminder #3" in content
 
 
 def test_send_drafted_emails_refuses_without_env_var(tmp_path, monkeypatch):
@@ -99,11 +112,11 @@ def test_send_drafted_emails_sends_via_smtp_when_opted_in(tmp_path, monkeypatch)
     csv_content = "asset_id,margin_pct,contact_name,contact_email\nAST-1,1,Ben,ben@example.com\n"
     rules = [
         RuleConfig(id="margin_min", field="margin_pct", type="min_value", severity="warning",
-                   message="Margin {value}% too low", params={"min": 5}),
+                   message="Margin {value}% too low", label="Margin", params={"min": 5}),
     ]
     config = build_config(tmp_path, csv_content, rules)
     results = validate_assets(config)
-    drafts = draft_emails(config, results, tmp_path / "emails")
+    drafts = draft_emails(config, results, {}, tmp_path / "emails")
 
     sent = send_drafted_emails(drafts)
 

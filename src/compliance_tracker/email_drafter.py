@@ -16,6 +16,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from compliance_tracker.config_schema import AppConfig
+from compliance_tracker.reminder_log import ReminderSummary
 from compliance_tracker.validator import AssetResult
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -40,9 +41,16 @@ def _render(template: str, context: dict[str, str]) -> str:
 
 
 def draft_emails(
-    config: AppConfig, results: list[AssetResult], output_dir: str | Path
+    config: AppConfig,
+    results: list[AssetResult],
+    reminder_summary: dict[str, ReminderSummary],
+    output_dir: str | Path,
 ) -> list[DraftedEmail]:
-    """Write one .txt draft per flagged asset. Never sends anything."""
+    """Write one .txt draft per flagged asset. Never sends anything.
+
+    reminder_summary should already reflect this run's reminder (i.e. loaded
+    after reminder_log.append_entries()), so each draft can say which
+    follow-up number it is."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -58,7 +66,13 @@ def draft_emails(
         issues_list = "\n".join(
             f"  - [{v.severity.upper()}] {v.message}" for v in result.violations
         )
-        context = {**fields, "contact_name": contact_name, "issues_list": issues_list}
+        reminder_number = reminder_summary.get(result.asset_id, ReminderSummary(None, 1)).count
+        context = {
+            **fields,
+            "contact_name": contact_name,
+            "issues_list": issues_list,
+            "reminder_number": reminder_number,
+        }
 
         subject = _render(config.email.subject_template, context)
         body = _render(config.email.body_template, context)

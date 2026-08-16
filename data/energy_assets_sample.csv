@@ -1,19 +1,19 @@
-asset_id,asset_name,location,contact_name,contact_email,certification_expiry,insurance_expiry,margin_pct,maintenance_status,permit_doc_ref
-AST-001,Solar Farm Alpha,"Riverside, CA, USA",Dana Whitfield,dana.whitfield@example.com,2027-01-15,2027-03-01,7.2,current,PMT-1001
-AST-002,Windridge Wind Park,"Aberdeen, UK",Owen Fairweather,owen.fairweather@example.com,2025-11-01,2027-02-01,6.5,current,PMT-1002
-AST-003,Sonnenfeld Solar Park,"Bavaria, Germany",Greta Lindqvist,greta.lindqvist@example.com,2027-05-01,2026-03-01,8.1,scheduled,PMT-1003
-AST-004,Coastal Breeze Wind Farm,"Galveston, TX, USA",Marcus Devereux,marcus.devereux@example.com,2027-01-01,2027-01-01,3.8,current,PMT-1004
-AST-005,Prairie Sun Solar,"Lubbock, TX, USA",Renata Alvez,renata.alvez@example.com,2027-06-01,2027-06-01,9.0,overdue,PMT-1005
-AST-006,Nordlicht Offshore Wind,"Esbjerg, Denmark",Soren Kjeldsen,soren.kjeldsen@example.com,2027-04-01,2027-04-01,6.0,current,
-AST-007,Sierra Ridge Solar,"Reno, NV, USA",Diane Castellano,diane.castellano@example.com,2027-02-01,2027-02-01,5.0,current,PMT-1007
-AST-008,Baltic Horizon Wind,"Gdansk, Poland",Piotr Zielinski,piotr.zielinski@example.com,2025-12-31,2025-10-01,2.1,suspended,PMT9
-AST-009,Meadowlark Solar Co-op,"Boulder, CO, USA",Felix Ngata,felix.ngata@example.com,2027-03-15,2027-03-15,6.8,current,PMT-1009
-AST-010,Highland Loch Hydro-Solar,"Inverness, UK",Isla MacRae,isla.macrae@example.com,2026-08-01,2027-05-01,5.5,scheduled,PMT-1010
-AST-011,Vega Solar Field,"Zaragoza, Spain",Lucia Fernandez,lucia.fernandez@example.com,2027-07-01,2027-07-01,4.9,current,PMT-1011
-AST-012,Amber Plains Wind,"Wichita, KS, USA",Grant Holloway,grant.holloway@example.com,2027-09-01,2027-09-01,10.2,current,PMT-1012
-AST-013,Fjordlight Solar,"Bergen, Norway",Ingrid Solberg,ingrid.solberg@example.com,2026-09-01,2026-09-01,5.2,current,PMT-1013
-AST-014,Red Hawk Solar Ranch,"Phoenix, AZ, USA",Talia Nakamura,talia.nakamura@example.com,2027-01-20,2026-05-01,6.1,current,PMT-1014
-AST-015,Delta Basin Wind,"Rotterdam, Netherlands",Bram Visser,bram.visser@example.com,2027-08-01,2027-08-01,5.9,pending,PMT-1015
-AST-016,Golden Valley Solar,"Fresno, CA, USA",Yolanda Reyes,yolanda.reyes@example.com,2027-02-14,2027-02-14,6.4,current,
-AST-017,Emerald Isle Wind,"Cork, Ireland",Sean O'Malley,sean.omalley@example.com,2027-03-01,2027-03-01,7.7,current,PMT-1017
-AST-018,Steppe Horizon Solar,"Almeria, Spain",Carla Jimenez,carla.jimenez@example.com,2026-01-01,2026-01-01,1.5,decommissioning,PMT-2
+asset_id,asset_name,location,contact_name,contact_email,certification_expiry,insurance_expiry,margin_pct,maintenance_status,downtime_hours
+AST-001,Solar Farm Alpha,"Riverside, CA, USA",Dana Whitfield,dana.whitfield@example.com,2027-01-15,2027-03-01,7.2,current,42
+AST-002,Windridge Wind Park,"Aberdeen, UK",Owen Fairweather,owen.fairweather@example.com,2025-11-01,2027-02-01,6.5,current,58
+AST-003,Sonnenfeld Solar Park,"Bavaria, Germany",Greta Lindqvist,greta.lindqvist@example.com,2027-05-01,2026-03-01,8.1,scheduled,35
+AST-004,Coastal Breeze Wind Farm,"Galveston, TX, USA",Marcus Devereux,marcus.devereux@example.com,2027-01-01,2027-01-01,3.8,current,64
+AST-005,Prairie Sun Solar,"Lubbock, TX, USA",Renata Alvez,renata.alvez@example.com,2027-06-01,2027-06-01,9.0,overdue,71
+AST-006,Nordlicht Offshore Wind,"Esbjerg, Denmark",Soren Kjeldsen,soren.kjeldsen@example.com,2027-04-01,2027-04-01,6.0,current,49
+AST-007,Sierra Ridge Solar,"Reno, NV, USA",Diane Castellano,diane.castellano@example.com,2027-02-01,2027-02-01,5.0,current,38
+AST-008,Baltic Horizon Wind,"Gdansk, Poland",Piotr Zielinski,piotr.zielinski@example.com,2025-12-31,2025-10-01,2.1,suspended,142
+AST-009,Meadowlark Solar Co-op,"Boulder, CO, USA",Felix Ngata,felix.ngata@example.com,2027-03-15,2027-03-15,6.8,current,55
+AST-010,Highland Loch Hydro-Solar,"Inverness, UK",Isla MacRae,isla.macrae@example.com,2026-08-01,2027-05-01,5.5,scheduled,61
+AST-011,Vega Solar Field,"Zaragoza, Spain",Lucia Fernandez,lucia.fernandez@example.com,2027-07-01,2027-07-01,4.9,current,47
+AST-012,Amber Plains Wind,"Wichita, KS, USA",Grant Holloway,grant.holloway@example.com,2027-09-01,2027-09-01,10.2,current,115
+AST-013,Fjordlight Solar,"Bergen, Norway",Ingrid Solberg,ingrid.solberg@example.com,2026-09-01,2026-09-01,5.2,current,33
+AST-014,Red Hawk Solar Ranch,"Phoenix, AZ, USA",Talia Nakamura,talia.nakamura@example.com,2027-01-20,2026-05-01,6.1,current,52
+AST-015,Delta Basin Wind,"Rotterdam, Netherlands",Bram Visser,bram.visser@example.com,2027-08-01,2027-08-01,5.9,pending,66
+AST-016,Golden Valley Solar,"Fresno, CA, USA",Yolanda Reyes,yolanda.reyes@example.com,2027-02-14,2027-02-14,6.4,current,44
+AST-017,Emerald Isle Wind,"Cork, Ireland",Sean O'Malley,sean.omalley@example.com,2027-03-01,2027-03-01,7.7,current,29
+AST-018,Steppe Horizon Solar,"Almeria, Spain",Carla Jimenez,carla.jimenez@example.com,2026-01-01,2026-01-01,1.5,decommissioning,168

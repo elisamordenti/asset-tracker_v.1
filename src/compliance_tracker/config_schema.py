@@ -25,7 +25,12 @@ RULE_TYPE_PARAMS: dict[str, list[str]] = {
     "max_value": ["max"],
     "allowed_values": ["values"],
     "regex_match": ["pattern"],
+    "document_on_file": ["directory", "filename_pattern"],
 }
+
+# Rule types that check a single CSV field. document_on_file instead checks
+# the filesystem, resolving its filename pattern from the whole record.
+FIELD_BASED_RULE_TYPES = set(RULE_TYPE_PARAMS) - {"document_on_file"}
 
 
 class ConfigError(Exception):
@@ -48,10 +53,11 @@ class ContactConfig:
 @dataclass
 class RuleConfig:
     id: str
-    field: str
     type: str
     severity: str
     message: str
+    label: str
+    field: str | None = None
     params: dict[str, Any] = dataclass_field(default_factory=dict)
 
 
@@ -63,8 +69,8 @@ class ColumnConfig:
 
 @dataclass
 class ExcelConfig:
-    summary_columns: list[ColumnConfig]
-    detail_columns: list[ColumnConfig]
+    info_columns: list[ColumnConfig]
+    notes_columns: list[ColumnConfig] = dataclass_field(default_factory=list)
 
 
 @dataclass
@@ -108,9 +114,13 @@ def _parse_contact(raw: dict) -> ContactConfig:
     return ContactConfig(name_field=raw["name_field"], email_field=raw["email_field"])
 
 
+def _humanize(identifier: str) -> str:
+    return identifier.replace("_", " ").replace("-", " ").title()
+
+
 def _parse_rule(raw: dict, index: int) -> RuleConfig:
     context = f"config.rules[{index}]"
-    _require_keys(raw, ["id", "field", "type", "severity", "message"], context)
+    _require_keys(raw, ["id", "type", "severity", "message"], context)
 
     rule_type = raw["type"]
     if rule_type not in RULE_TYPE_PARAMS:
@@ -120,6 +130,9 @@ def _parse_rule(raw: dict, index: int) -> RuleConfig:
             f"Known types: {known}"
         )
 
+    if rule_type in FIELD_BASED_RULE_TYPES and "field" not in raw:
+        raise ConfigError(f"{context} ('{raw['id']}') is missing required key: field")
+
     severity = raw["severity"]
     if severity not in SEVERITIES:
         raise ConfigError(
@@ -128,7 +141,7 @@ def _parse_rule(raw: dict, index: int) -> RuleConfig:
         )
 
     required_params = RULE_TYPE_PARAMS[rule_type]
-    known_top_level = {"id", "field", "type", "severity", "message"}
+    known_top_level = {"id", "field", "type", "severity", "message", "label"}
     params = {k: v for k, v in raw.items() if k not in known_top_level}
     missing_params = [p for p in required_params if p not in params]
     if missing_params:
@@ -139,16 +152,17 @@ def _parse_rule(raw: dict, index: int) -> RuleConfig:
 
     return RuleConfig(
         id=raw["id"],
-        field=raw["field"],
+        field=raw.get("field"),
         type=rule_type,
         severity=severity,
         message=raw["message"],
+        label=raw.get("label", _humanize(raw["id"])),
         params=params,
     )
 
 
-def _parse_columns(raw: list, context: str) -> list[ColumnConfig]:
-    if not isinstance(raw, list) or not raw:
+def _parse_columns(raw: list, context: str, allow_empty: bool = False) -> list[ColumnConfig]:
+    if not isinstance(raw, list) or (not raw and not allow_empty):
         raise ConfigError(f"{context} must be a non-empty list")
     columns = []
     for i, col in enumerate(raw):
@@ -158,10 +172,12 @@ def _parse_columns(raw: list, context: str) -> list[ColumnConfig]:
 
 
 def _parse_excel(raw: dict) -> ExcelConfig:
-    _require_keys(raw, ["summary_columns", "detail_columns"], "config.excel")
+    _require_keys(raw, ["info_columns"], "config.excel")
     return ExcelConfig(
-        summary_columns=_parse_columns(raw["summary_columns"], "config.excel.summary_columns"),
-        detail_columns=_parse_columns(raw["detail_columns"], "config.excel.detail_columns"),
+        info_columns=_parse_columns(raw["info_columns"], "config.excel.info_columns"),
+        notes_columns=_parse_columns(
+            raw.get("notes_columns", []), "config.excel.notes_columns", allow_empty=True
+        ),
     )
 
 
@@ -197,11 +213,21 @@ def load_config(path: str | Path) -> AppConfig:
         seen_ids.add(rule.id)
         rules.append(rule)
 
+    source = _parse_source(raw["source"])
+    excel = _parse_excel(raw["excel"])
+    if excel.info_columns[0].field != source.id_field:
+        raise ConfigError(
+            "config.excel.info_columns[0] must be the id field "
+            f"('{source.id_field}', matching config.source.id_field) -- it's always "
+            "written as the Tracker sheet's first column and used as the merge "
+            "key for preserving notes across runs"
+        )
+
     return AppConfig(
         domain=raw["domain"],
-        source=_parse_source(raw["source"]),
+        source=source,
         contact=_parse_contact(raw["contact"]),
         rules=rules,
-        excel=_parse_excel(raw["excel"]),
+        excel=excel,
         email=_parse_email(raw["email"]),
     )

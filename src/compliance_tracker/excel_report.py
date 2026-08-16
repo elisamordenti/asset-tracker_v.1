@@ -1,30 +1,38 @@
 """Generates the centralized Excel compliance tracker.
 
-Every column in the Summary and Asset Detail sheets comes from
-config.excel.summary_columns / detail_columns -- this module never hardcodes
-a field name. Pointing the whole pipeline at a new domain only requires a new
-config; this file does not change.
+Two sheets: **Tracker** is the primary dashboard -- one row per asset, one
+column per configured rule, so a reviewer can scan a single matrix instead of
+cross-referencing a summary against a separate issues list. **Audit Log**
+keeps the full one-row-per-violation trail for traceability.
+
+Every column beyond the fixed computed ones (Next Deadline, Last Reminder
+Sent, Reminder Count, Status) comes from config.excel.info_columns or from
+each rule's own label -- this module never hardcodes a field name, so
+pointing the whole pipeline at a new domain only requires a new config.
 """
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
 from compliance_tracker.config_schema import AppConfig, ColumnConfig
+from compliance_tracker.reminder_log import ReminderSummary
+from compliance_tracker.rules import resolve_value
 from compliance_tracker.validator import COMPLIANT, FLAGGED, AssetResult
 
 HEADER_FILL = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
-COMPLIANT_FILL = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
-FLAGGED_FILL = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+PASS_FILL = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
+FAIL_FILL = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
 CRITICAL_FILL = PatternFill(start_color="FCA5A5", end_color="FCA5A5", fill_type="solid")
 WARNING_FILL = PatternFill(start_color="FDE68A", end_color="FDE68A", fill_type="solid")
 
-ISSUES_LOG_COLUMNS = [
+AUDIT_LOG_COLUMNS = [
     ColumnConfig(field="asset_id", label="Asset ID"),
     ColumnConfig(field="rule_id", label="Rule ID"),
     ColumnConfig(field="severity", label="Severity"),
@@ -33,19 +41,63 @@ ISSUES_LOG_COLUMNS = [
     ColumnConfig(field="message", label="Message"),
 ]
 
+NOTES_FILL = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
 
-def _write_header(ws: Worksheet, columns: list[ColumnConfig]) -> None:
-    for col_idx, column in enumerate(columns, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=column.label)
+NEXT_DEADLINE_LABEL = "Next Deadline"
+LAST_REMINDER_LABEL = "Last Reminder Sent"
+REMINDER_COUNT_LABEL = "Reminder Count"
+STATUS_LABEL = "Status"
+
+
+def _read_existing_notes(path: Path, config: AppConfig) -> dict[str, dict[str, str]]:
+    """Read back {asset_id: {notes_label: value}} from a previously-generated
+    Tracker sheet, so hand-typed notes survive regeneration. Any failure to
+    read (missing sheet, unexpected layout, corrupt file) is treated as "no
+    prior notes" rather than raised -- this is a best-effort preservation,
+    not a requirement for the run to succeed."""
+    notes_labels = [c.label for c in config.excel.notes_columns]
+    if not notes_labels or not path.exists():
+        return {}
+
+    try:
+        wb = load_workbook(path)
+        if "Tracker" not in wb.sheetnames:
+            return {}
+        ws = wb["Tracker"]
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        headers = list(header_row)
+        # The id column is always info_columns[0], enforced at config-load
+        # time to equal source.id_field, so it's always Tracker column A.
+        id_col_idx = 0
+        label_to_idx = {label: headers.index(label) for label in notes_labels if label in headers}
+        if not label_to_idx:
+            return {}
+
+        preserved: dict[str, dict[str, str]] = {}
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if id_col_idx >= len(row) or row[id_col_idx] is None:
+                continue
+            asset_id = str(row[id_col_idx])
+            preserved[asset_id] = {
+                label: row[idx] for label, idx in label_to_idx.items() if idx < len(row)
+            }
+        return preserved
+    except Exception:
+        return {}
+
+
+def _write_header(ws: Worksheet, labels: list[str]) -> None:
+    for col_idx, label in enumerate(labels, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=label)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="left", vertical="center")
     ws.freeze_panes = "A2"
 
 
-def _autosize_columns(ws: Worksheet, columns: list[ColumnConfig]) -> None:
-    for col_idx, column in enumerate(columns, start=1):
-        max_len = len(column.label)
+def _autosize_columns(ws: Worksheet, ncols: int) -> None:
+    for col_idx in range(1, ncols + 1):
+        max_len = len(str(ws.cell(row=1, column=col_idx).value or ""))
         for row in ws.iter_rows(min_col=col_idx, max_col=col_idx, min_row=2):
             value = row[0].value
             if value is not None:
@@ -53,46 +105,81 @@ def _autosize_columns(ws: Worksheet, columns: list[ColumnConfig]) -> None:
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max_len + 2, 60)
 
 
-def _write_summary_sheet(ws: Worksheet, config: AppConfig, results: list[AssetResult]) -> None:
-    columns = config.excel.summary_columns
-    _write_header(ws, columns)
+def _next_deadline(config: AppConfig, result: AssetResult) -> str:
+    dates = []
+    for rule in config.rules:
+        if rule.type != "not_expired":
+            continue
+        raw = resolve_value(rule, result.record)
+        try:
+            dates.append(date.fromisoformat(raw.strip()))
+        except (ValueError, AttributeError):
+            continue
+    return min(dates).isoformat() if dates else ""
+
+
+def _write_tracker_sheet(
+    ws: Worksheet,
+    config: AppConfig,
+    results: list[AssetResult],
+    reminder_summary: dict[str, ReminderSummary],
+    existing_notes: dict[str, dict[str, str]],
+) -> None:
+    info_columns = config.excel.info_columns
+    rules = config.rules
+    notes_columns = config.excel.notes_columns
+
+    labels = (
+        [c.label for c in info_columns]
+        + [r.label for r in rules]
+        + [NEXT_DEADLINE_LABEL, LAST_REMINDER_LABEL, REMINDER_COUNT_LABEL, STATUS_LABEL]
+        + [c.label for c in notes_columns]
+    )
+    _write_header(ws, labels)
 
     ordered = sorted(results, key=lambda r: (r.compliance_status != FLAGGED, r.asset_id))
-    status_col_idx = next(
-        (i for i, c in enumerate(columns, start=1) if c.field == "compliance_status"), None
-    )
+    total_cols = len(labels)
 
     for row_idx, result in enumerate(ordered, start=2):
-        fields = result.display_fields()
-        for col_idx, column in enumerate(columns, start=1):
-            ws.cell(row=row_idx, column=col_idx, value=fields.get(column.field, ""))
-        if status_col_idx:
-            fill = FLAGGED_FILL if result.compliance_status == FLAGGED else COMPLIANT_FILL
-            ws.cell(row=row_idx, column=status_col_idx).fill = fill
+        col_idx = 1
+        for column in info_columns:
+            ws.cell(row=row_idx, column=col_idx, value=result.record.get(column.field, ""))
+            col_idx += 1
 
-    _autosize_columns(ws, columns)
+        violated_rule_ids = {v.rule_id for v in result.violations}
+        for rule in rules:
+            value = resolve_value(rule, result.record)
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.fill = FAIL_FILL if rule.id in violated_rule_ids else PASS_FILL
+            col_idx += 1
+
+        ws.cell(row=row_idx, column=col_idx, value=_next_deadline(config, result))
+        col_idx += 1
+
+        reminder = reminder_summary.get(result.asset_id)
+        ws.cell(row=row_idx, column=col_idx, value=reminder.last_sent if reminder else "")
+        col_idx += 1
+        ws.cell(row=row_idx, column=col_idx, value=reminder.count if reminder else 0)
+        col_idx += 1
+
+        status_cell = ws.cell(row=row_idx, column=col_idx, value=result.compliance_status)
+        status_cell.fill = PASS_FILL if result.compliance_status == COMPLIANT else FAIL_FILL
+        col_idx += 1
+
+        preserved = existing_notes.get(result.asset_id, {})
+        for notes_column in notes_columns:
+            cell = ws.cell(row=row_idx, column=col_idx, value=preserved.get(notes_column.label, ""))
+            cell.fill = NOTES_FILL
+            col_idx += 1
+
+    _autosize_columns(ws, total_cols)
 
 
-def _write_detail_sheet(ws: Worksheet, config: AppConfig, results: list[AssetResult]) -> None:
-    columns = config.excel.detail_columns
-    _write_header(ws, columns)
+def _write_audit_log_sheet(ws: Worksheet, results: list[AssetResult]) -> None:
+    columns = AUDIT_LOG_COLUMNS
+    _write_header(ws, [c.label for c in columns])
 
     ordered = sorted(results, key=lambda r: r.asset_id)
-    for row_idx, result in enumerate(ordered, start=2):
-        fields = result.display_fields()
-        for col_idx, column in enumerate(columns, start=1):
-            ws.cell(row=row_idx, column=col_idx, value=fields.get(column.field, ""))
-
-    _autosize_columns(ws, columns)
-
-
-def _write_issues_sheet(ws: Worksheet, results: list[AssetResult]) -> None:
-    columns = ISSUES_LOG_COLUMNS
-    _write_header(ws, columns)
-
-    ordered = sorted(
-        results, key=lambda r: r.asset_id
-    )
 
     row_idx = 2
     for result in ordered:
@@ -101,7 +188,7 @@ def _write_issues_sheet(ws: Worksheet, results: list[AssetResult]) -> None:
                 "asset_id": result.asset_id,
                 "rule_id": violation.rule_id,
                 "severity": violation.severity,
-                "field": violation.field,
+                "field": violation.field or "",
                 "value": violation.value,
                 "message": violation.message,
             }
@@ -115,24 +202,27 @@ def _write_issues_sheet(ws: Worksheet, results: list[AssetResult]) -> None:
                 ws.cell(row=row_idx, column=severity_col_idx).fill = fill
             row_idx += 1
 
-    _autosize_columns(ws, columns)
+    _autosize_columns(ws, len(columns))
 
 
-def generate_excel_report(config: AppConfig, results: list[AssetResult], output_path: str | Path) -> Path:
+def generate_excel_report(
+    config: AppConfig,
+    results: list[AssetResult],
+    reminder_summary: dict[str, ReminderSummary],
+    output_path: str | Path,
+) -> Path:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_notes = _read_existing_notes(output_path, config)
 
     workbook = Workbook()
 
-    ws_summary = workbook.active
-    ws_summary.title = "Summary"
-    _write_summary_sheet(ws_summary, config, results)
+    ws_tracker = workbook.active
+    ws_tracker.title = "Tracker"
+    _write_tracker_sheet(ws_tracker, config, results, reminder_summary, existing_notes)
 
-    ws_detail = workbook.create_sheet("Asset Detail")
-    _write_detail_sheet(ws_detail, config, results)
-
-    ws_issues = workbook.create_sheet("Issues Log")
-    _write_issues_sheet(ws_issues, results)
+    ws_audit = workbook.create_sheet("Audit Log")
+    _write_audit_log_sheet(ws_audit, results)
 
     workbook.save(output_path)
     return output_path
