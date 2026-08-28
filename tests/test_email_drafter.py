@@ -27,7 +27,7 @@ def build_config(tmp_path, csv_content, rules):
         excel=ExcelConfig(info_columns=[ColumnConfig(field="asset_id", label="ID")]),
         email=EmailConfig(
             subject_template="Action Required: {asset_id}",
-            body_template="Hi {contact_name}, (reminder #{reminder_number})\n\n{issues_list}\n",
+            body_template="Hi {contact_name}, (reminder #{reminder_number})\n\n{issues_list}\n\n{deadline_line}",
         ),
     )
 
@@ -82,6 +82,66 @@ def test_draft_email_uses_reminder_number_from_summary(tmp_path):
 
     content = drafts[0].file_path.read_text(encoding="utf-8")
     assert "reminder #3" in content
+
+
+def test_draft_email_includes_deadline_line_for_not_expired_violation(tmp_path):
+    from datetime import date, timedelta
+
+    csv_content = (
+        "asset_id,certification_expiry,contact_name,contact_email\n"
+        f"AST-1,{(date.today() - timedelta(days=1)).isoformat()},Ben,ben@example.com\n"
+    )
+    rules = [
+        RuleConfig(id="cert_current", field="certification_expiry", type="not_expired", severity="critical",
+                   message="expired", label="Cert", params={"max_age_days": 0}),
+    ]
+    config = build_config(tmp_path, csv_content, rules)
+    results = validate_assets(config)
+    drafts = draft_emails(config, results, {}, tmp_path / "emails")
+
+    content = drafts[0].file_path.read_text(encoding="utf-8")
+    assert "Please resolve the above before" in content
+    assert "your next compliance deadline" in content
+
+
+def test_draft_email_has_no_deadline_line_without_date_based_violation(tmp_path):
+    csv_content = "asset_id,margin_pct,contact_name,contact_email\nAST-1,1,Ben,ben@example.com\n"
+    rules = [
+        RuleConfig(id="margin_min", field="margin_pct", type="min_value", severity="warning",
+                   message="too low", label="Margin", params={"min": 5}),
+    ]
+    config = build_config(tmp_path, csv_content, rules)
+    results = validate_assets(config)
+    drafts = draft_emails(config, results, {}, tmp_path / "emails")
+
+    content = drafts[0].file_path.read_text(encoding="utf-8")
+    assert "Please resolve the above before" not in content
+
+
+def test_draft_email_ignores_unrelated_compliant_deadline(tmp_path):
+    """Regression test: an asset flagged only for a non-date issue (margin)
+    must not cite an unrelated, still-compliant date field's expiry as if it
+    were the deadline for the actual flag."""
+    from datetime import date, timedelta
+
+    future_expiry = (date.today() + timedelta(days=300)).isoformat()
+    csv_content = (
+        "asset_id,margin_pct,certification_expiry,contact_name,contact_email\n"
+        f"AST-1,1,{future_expiry},Ben,ben@example.com\n"
+    )
+    rules = [
+        RuleConfig(id="margin_min", field="margin_pct", type="min_value", severity="warning",
+                   message="too low", label="Margin", params={"min": 5}),
+        RuleConfig(id="cert_current", field="certification_expiry", type="not_expired", severity="critical",
+                   message="expired", label="Cert", params={"max_age_days": 0}),
+    ]
+    config = build_config(tmp_path, csv_content, rules)
+    results = validate_assets(config)
+    drafts = draft_emails(config, results, {}, tmp_path / "emails")
+
+    content = drafts[0].file_path.read_text(encoding="utf-8")
+    assert "Please resolve the above before" not in content
+    assert future_expiry not in content
 
 
 def test_send_drafted_emails_refuses_without_env_var(tmp_path, monkeypatch):

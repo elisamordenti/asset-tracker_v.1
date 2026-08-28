@@ -12,14 +12,36 @@ import os
 import re
 import smtplib
 from dataclasses import dataclass
+from datetime import date
 from email.message import EmailMessage
 from pathlib import Path
 
 from compliance_tracker.config_schema import AppConfig
 from compliance_tracker.reminder_log import ReminderSummary
+from compliance_tracker.rules import resolve_value
 from compliance_tracker.validator import AssetResult
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _violation_deadline(config: AppConfig, result: AssetResult) -> str:
+    """The earliest date among this asset's VIOLATED not_expired rules only
+    -- deliberately narrower than excel_report.next_deadline (which shows
+    the nearest deadline of any kind, violated or not, as a general Tracker
+    planning column). An email saying "resolve the above by <date>" must
+    only ever cite a date that's actually tied to what's being flagged, not
+    an unrelated field that happens to expire soonest."""
+    violated_ids = {v.rule_id for v in result.violations}
+    dates = []
+    for rule in config.rules:
+        if rule.type != "not_expired" or rule.id not in violated_ids:
+            continue
+        raw = resolve_value(rule, result.record)
+        try:
+            dates.append(date.fromisoformat(raw.strip()))
+        except (ValueError, AttributeError):
+            continue
+    return min(dates).isoformat() if dates else ""
 
 
 @dataclass
@@ -67,11 +89,20 @@ def draft_emails(
             f"  - [{v.severity.upper()}] {v.message}" for v in result.violations
         )
         reminder_number = reminder_summary.get(result.asset_id, ReminderSummary(None, 1)).count
+
+        deadline = _violation_deadline(config, result)
+        deadline_line = (
+            f"Please resolve the above before {deadline}, your next compliance deadline.\n"
+            if deadline
+            else ""
+        )
+
         context = {
             **fields,
             "contact_name": contact_name,
             "issues_list": issues_list,
             "reminder_number": reminder_number,
+            "deadline_line": deadline_line,
         }
 
         subject = _render(config.email.subject_template, context)

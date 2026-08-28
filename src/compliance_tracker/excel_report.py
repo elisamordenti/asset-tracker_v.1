@@ -105,7 +105,11 @@ def _autosize_columns(ws: Worksheet, ncols: int) -> None:
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max_len + 2, 60)
 
 
-def _next_deadline(config: AppConfig, result: AssetResult) -> str:
+def next_deadline(config: AppConfig, result: AssetResult) -> str:
+    """The earliest date among an asset's not_expired-type rule fields, or ""
+    if it has none. Public (not the module's other _-prefixed helpers)
+    because email_drafter.py reuses it for the reminder email's deadline
+    line -- one source of truth for "what's this asset's next deadline"."""
     dates = []
     for rule in config.rules:
         if rule.type != "not_expired":
@@ -152,7 +156,7 @@ def build_tracker_table(
 
         reminder = reminder_summary.get(result.asset_id)
         row += [
-            _next_deadline(config, result),
+            next_deadline(config, result),
             reminder.last_sent if reminder else "",
             reminder.count if reminder else 0,
             result.compliance_status,

@@ -152,6 +152,39 @@ PORTFOLIO_INBOX = [
 ]
 
 
+def write_inbox_excel(directory: Path, filename: str, sheet_title: str, rows: list[tuple[str, str]]) -> None:
+    """Some incoming documents are Excel technical/insurance schedules, not
+    PDFs -- extraction.extract_text() reads workbook content the same way it
+    reads a PDF's text, so this exercises that path with a real .xlsx file."""
+    from openpyxl import Workbook
+
+    directory.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_title
+    for row in rows:
+        ws.append(list(row))
+    wb.save(directory / filename)
+
+
+# AST-011 is one of the assets deliberately missing its insurance_certificate
+# document (see ENERGY_MISSING) -- this simulates the client sending that
+# same information as an Excel schedule instead of a PDF.
+ENERGY_INBOX_EXCEL = [
+    (
+        "AST-011_insurance_schedule.xlsx",
+        "Insurance Schedule",
+        [
+            ("Field", "Value"),
+            ("Asset ID", "AST-011"),
+            ("Policy Expiry", "2028-04-01"),
+            ("Insurer", "Synthetic Mutual Insurance Co."),
+            ("Policy Number", "SYN-DEMO-0000"),
+        ],
+    ),
+]
+
+
 def main() -> None:
     energy_dir = REPO_ROOT / "data" / "energy_assets_documents"
     for asset_id in ENERGY_ASSET_IDS:
@@ -170,6 +203,8 @@ def main() -> None:
     energy_inbox_dir = REPO_ROOT / "data" / "energy_assets_inbox"
     for filename, lines in ENERGY_INBOX:
         write_inbox_doc(energy_inbox_dir, filename, lines)
+    for filename, sheet_title, rows in ENERGY_INBOX_EXCEL:
+        write_inbox_excel(energy_inbox_dir, filename, sheet_title, rows)
 
     portfolio_inbox_dir = REPO_ROOT / "data" / "portfolio_companies_inbox"
     for filename, lines in PORTFOLIO_INBOX:

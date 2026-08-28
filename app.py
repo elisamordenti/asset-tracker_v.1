@@ -116,6 +116,13 @@ def main():
     decorated_rows = decorate_rule_columns(config, ordered, rows)
     df = pd.DataFrame(decorated_rows, columns=headers)
 
+    status_label = "Status"
+    show = st.sidebar.radio("Show", ["All", "Flagged", "Compliant"], horizontal=True)
+    if show == "Flagged":
+        df = df[df[status_label] == "FLAGGED"]
+    elif show == "Compliant":
+        df = df[df[status_label] == "COMPLIANT"]
+
     notes_labels = [c.label for c in config.excel.notes_columns]
     id_label = headers[0]
     column_config = {h: st.column_config.Column(disabled=True) for h in headers if h not in notes_labels}
@@ -166,7 +173,10 @@ def main():
 
     st.divider()
     st.subheader("Upload a document")
-    uploaded = st.file_uploader("Drop a PDF (any filename -- it gets classified automatically)", type="pdf")
+    uploaded = st.file_uploader(
+        "Drop a PDF or Excel file (any filename -- it gets classified automatically)",
+        type=["pdf", "xlsx", "xls"],
+    )
     if uploaded is not None and st.button("Classify & file"):
         if not os.environ.get("ANTHROPIC_API_KEY"):
             st.error("Set ANTHROPIC_API_KEY to use document classification.")

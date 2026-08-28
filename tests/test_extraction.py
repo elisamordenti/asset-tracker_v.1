@@ -14,6 +14,7 @@ from compliance_tracker.extraction import (
     _RawExtraction,
     build_document_type_candidates,
     classify_and_extract,
+    extract_text,
 )
 
 
@@ -145,3 +146,32 @@ def test_classify_and_extract_keeps_field_with_no_declared_type():
     result = classify_and_extract("text", ["AST-1"], candidates, client=fake)
 
     assert result.fields == {"permit_number": "anything goes"}
+
+
+def test_extract_text_reads_excel_workbook(tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Technical Schedule"
+    ws.append(["Asset ID", "Certification Expiry"])
+    ws.append(["AST-004", "2028-01-15"])
+    path = tmp_path / "schedule.xlsx"
+    wb.save(path)
+
+    text = extract_text(path)
+
+    assert "[Sheet: Technical Schedule]" in text
+    assert "Asset ID | Certification Expiry" in text
+    assert "AST-004 | 2028-01-15" in text
+
+
+def test_extract_text_raises_for_unsupported_extension(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("hello", encoding="utf-8")
+
+    try:
+        extract_text(path)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert ".txt" in str(e)

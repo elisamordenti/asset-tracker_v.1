@@ -24,6 +24,7 @@ from compliance_tracker.extraction import (
 from compliance_tracker.loaders import build_loader
 
 CONFIDENT_LEVELS = {"high", "medium"}
+SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls"}
 
 
 @dataclass
@@ -47,6 +48,10 @@ class IntakeSummary:
     @property
     def needs_review(self) -> list[IntakeFileOutcome]:
         return [o for o in self.outcomes if o.outcome == "needs_review"]
+
+    @property
+    def skipped(self) -> list[IntakeFileOutcome]:
+        return [o for o in self.outcomes if o.outcome == "skipped_unsupported_type"]
 
 
 def _log_row(log_path: Path, run_date: date, outcome: IntakeFileOutcome) -> None:
@@ -90,6 +95,15 @@ def run_intake(
 
     for path in sorted(inbox_dir.iterdir()):
         if not path.is_file():
+            continue
+
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            outcome = IntakeFileOutcome(
+                source_filename=path.name, outcome="skipped_unsupported_type",
+                asset_id=None, document_type_rule_id=None, confidence="n/a",
+            )
+            _log_row(log_path, run_date, outcome)
+            summary.outcomes.append(outcome)
             continue
 
         text = extract_text(path)

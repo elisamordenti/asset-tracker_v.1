@@ -142,11 +142,16 @@ streamlit run app.py
 
 This is the intended day-to-day interface: a domain selector, a "Sync from
 registry" button that pulls the CSV (plus any `extracted_values.csv`
-overlay) into the database, the tracker itself as a live editable table
-(notes save straight back to Supabase — no export/re-import step), a
-document upload box that runs the same classify/extract pipeline as
-`intake` in-page, a "Draft reminders" button, and an "Export to Excel"
-button for when a bank/tender-ready file is still needed.
+overlay) into the database, a Status filter (All / Flagged / Compliant) in
+the sidebar for triaging a large portfolio, the tracker itself as a live
+editable table (each rule column shown as ✓/✗ against its value — Streamlit
+can't combine per-cell background color with inline editing, so the
+checklist signal lives in the text — notes save straight back to Supabase,
+no export/re-import step), a document upload box (PDF **or** Excel — real
+incoming paperwork arrives as both, so `extraction.py` reads either) that
+runs the same classify/extract pipeline as `intake` in-page, a "Draft
+reminders" button, and an "Export to Excel" button for when a bank/tender-
+ready file is still needed.
 
 Only the `record` column is ever touched by a sync — `notes` is exclusively
 yours, same non-destructive-merge principle as the Excel/Sheets notes
@@ -222,20 +227,24 @@ python -m compliance_tracker intake --config config/energy_assets.yaml \
 ```
 
 Drop raw files into an inbox folder — arbitrary filenames, exactly as a
-client would actually send them (`data/energy_assets_inbox/` ships a few:
-`IMG_20260810_permit_scan.pdf`, `Windridge_GridCert_Renewal.pdf`). For each
-file, Claude reads its text ([`extraction.py`](src/compliance_tracker/extraction.py),
-via `pypdf` deterministically extracting the text first) and returns which
-known asset it belongs to, which document type it is, and the values for
-whatever fields that document type declares as extractable in config — e.g.
-`insurance_doc_on_file` declares `insurance_expiry: date`. A confident match
-gets auto-filed into the document archive under the naming convention the
-existing `document_on_file` rules already check, and its extracted values
-are appended to `output/<domain>/extracted_values.csv` — a separate,
-clearly-labeled overlay layer, never a silent edit to the base CSV registry,
-so it's always visible which values a human entered and which an LLM read
-off a document. An unconfident match is left exactly where it is and logged
-to `extraction_log.csv` for a human to resolve — intake never guesses.
+client would actually send them, **PDF or Excel** (`data/energy_assets_inbox/`
+ships both: `IMG_20260810_permit_scan.pdf`, `Windridge_GridCert_Renewal.pdf`,
+and `AST-011_insurance_schedule.xlsx`). For each file, Claude reads its text
+([`extraction.py`](src/compliance_tracker/extraction.py) dispatches by file
+extension — `pypdf` for PDFs, `openpyxl` flattening every sheet's cells for
+Excel — both fully deterministic, no AI involved in the text extraction
+itself) and returns which known asset it belongs to, which document type it
+is, and the values for whatever fields that document type declares as
+extractable in config — e.g. `insurance_doc_on_file` declares
+`insurance_expiry: date`. A confident match gets auto-filed into the
+document archive under the naming convention the existing `document_on_file`
+rules already check, and its extracted values are appended to
+`output/<domain>/extracted_values.csv` — a separate, clearly-labeled overlay
+layer, never a silent edit to the base CSV registry, so it's always visible
+which values a human entered and which an LLM read off a document. An
+unconfident match (or a file with an extension it doesn't recognize, e.g.
+`.docx`) is left exactly where it is and logged to `extraction_log.csv` for
+a human to resolve — intake never guesses.
 
 **The LLM's job stops at extraction.** `run`/`sync` merge the overlay on top
 of the base registry ([`extracted_values.py`](src/compliance_tracker/extracted_values.py))
@@ -382,18 +391,30 @@ tool three times in a row and watch the count climb
 reference this via `{reminder_number}`, so a draft can say "this is
 follow-up reminder #3."
 
+Drafts also state an actual **deadline** — "resolve the above before
+2027-01-15, your next compliance deadline" — computed from the asset's own
+`not_expired` rules, but only counting rules that are *actually violated*.
+An asset flagged only for, say, a maintenance-status issue never cites an
+unrelated (and still-compliant) certificate's expiry date as if it were the
+deadline for that flag — `email_drafter.py`'s `_violation_deadline()` scopes
+strictly to what's actually being flagged, verified by a regression test
+(`test_draft_email_ignores_unrelated_compliant_deadline`) written after
+exactly that bug showed up in a real generated email during development.
+
 ## Tests
 
 ```bash
 pytest -v
 ```
 
-87 tests covering: each of the seven rule types at their boundaries, the CSV
+93 tests covering: each of the seven rule types at their boundaries, the CSV
 loader's error handling, end-to-end validation counts, config-driven Tracker
 column mapping, notes-preservation across regeneration (the local Excel
 path, the Google Sheets path, and the Supabase path — the latter two each
 via a fake in-memory client, no `gspread`/`supabase` install required),
-reminder-log accumulation, draft-only-by-default email behavior with SMTP
+PDF and Excel text extraction, deadline-line correctness in reminder emails
+(including the regression test above), reminder-log accumulation,
+draft-only-by-default email behavior with SMTP
 mocked for the opt-in send path, document classification/extraction and the
 intake pipeline (against fake LLM clients — no network calls or
 `anthropic` install required), the extracted-values overlay, and the

@@ -108,3 +108,21 @@ def test_missing_inbox_dir_returns_empty_summary(tmp_path):
     )
 
     assert summary.outcomes == []
+
+
+def test_unsupported_file_type_is_skipped_not_crashed(tmp_path):
+    inbox_dir = tmp_path / "inbox"
+    inbox_dir.mkdir()
+    (inbox_dir / "readme.txt").write_text("not a document", encoding="utf-8")
+
+    config = build_config(tmp_path, tmp_path / "archive")
+    fake = FakeLLMClient(_RawExtraction(asset_id=None, document_type=None, confidence="low", fields=[]))
+
+    # No extract_text patch here -- a real .txt file must never reach it.
+    summary = run_intake(
+        config, inbox_dir, tmp_path / "extracted_values.csv", tmp_path / "extraction_log.csv", client=fake
+    )
+
+    assert len(summary.skipped) == 1
+    assert summary.skipped[0].source_filename == "readme.txt"
+    assert (inbox_dir / "readme.txt").exists()  # left in place

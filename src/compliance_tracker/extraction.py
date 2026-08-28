@@ -54,12 +54,39 @@ def build_document_type_candidates(config: AppConfig) -> list[DocumentTypeCandid
     return candidates
 
 
-def extract_text(pdf_path: str | Path) -> str:
-    """Deterministic PDF text extraction -- no AI involved."""
+def extract_text(path: str | Path) -> str:
+    """Deterministic text extraction -- no AI involved. Dispatches by file
+    extension so the same classify_and_extract pipeline can read either a
+    PDF or an Excel technical schedule, since real incoming documents arrive
+    as both."""
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return _extract_text_from_pdf(path)
+    if suffix in (".xlsx", ".xls"):
+        return _extract_text_from_excel(path)
+    raise ValueError(f"Unsupported document type: {suffix or '(no extension)'}")
+
+
+def _extract_text_from_pdf(path: Path) -> str:
     from pypdf import PdfReader
 
-    reader = PdfReader(str(pdf_path))
+    reader = PdfReader(str(path))
     return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+
+def _extract_text_from_excel(path: Path) -> str:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(str(path), data_only=True)
+    lines = []
+    for sheet in workbook.worksheets:
+        lines.append(f"[Sheet: {sheet.title}]")
+        for row in sheet.iter_rows(values_only=True):
+            cells = [str(c) for c in row if c is not None]
+            if cells:
+                lines.append(" | ".join(cells))
+    return "\n".join(lines)
 
 
 @dataclass
