@@ -4,6 +4,10 @@
 # identically.
 
 domain: "Energy Assets"
+# Shared with config/energy_assets_performance.yaml -- both configs are
+# different lenses (different rules, different tracked columns) over the
+# exact same synced pool of assets, not separate datasets.
+registry_key: energy_assets
 
 source:
   type: csv

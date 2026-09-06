@@ -14,10 +14,11 @@ import os
 import sys
 from pathlib import Path
 
+from compliance_tracker.archive import LocalDiskArchive
 from compliance_tracker.config_schema import AppConfig, ConfigError, load_config
 from compliance_tracker.email_drafter import draft_emails, send_drafted_emails
 from compliance_tracker.excel_report import generate_excel_report
-from compliance_tracker.extracted_values import apply_to_records
+from compliance_tracker.extracted_values import apply_to_records, load_latest_values
 from compliance_tracker.loaders import build_loader
 from compliance_tracker.reminder_log import ReminderSummary, append_entries, load_summary
 from compliance_tracker.validator import AssetResult, validate_assets
@@ -51,13 +52,10 @@ def _load_and_validate(config_path: str, output_dir: str | None) -> tuple[AppCon
         return 1
 
     extracted_values_path = base_output / "extracted_values.csv"
-    records = (
-        apply_to_records(base_records, extracted_values_path, config.source.id_field)
-        if extracted_values_path.exists()
-        else base_records
-    )
+    latest = load_latest_values(extracted_values_path) if extracted_values_path.exists() else {}
+    records = apply_to_records(base_records, latest, config.source.id_field)
 
-    results = validate_assets(config, records=records)
+    results = validate_assets(config, records=records, archive=LocalDiskArchive())
     return config, base_output, results
 
 

@@ -1,10 +1,14 @@
 """Orchestrates the inbox -> archive + extracted-values pipeline.
 
-For every file sitting in a domain's inbox folder: extract its text, ask the
-LLM to classify and extract (extraction.classify_and_extract), and either
-file it into the document archive + log the extracted values, or -- if the
-match isn't confident -- leave it exactly where it is and log it as needing
-human review. Never silently guesses.
+For every incoming file: extract its content, ask the LLM to classify and
+extract (extraction.classify_and_extract), and either file it into the
+document archive + log the extracted values, or -- if the match isn't
+confident -- leave it for human review. Never silently guesses.
+
+process_upload() is the single per-file step, shared by run_intake() (the
+CLI's batch pass over a local inbox folder) and app.py's upload widget (one
+file at a time, backed by Supabase Storage) -- the two previously
+duplicated this logic independently.
 """
 
 from __future__ import annotations
@@ -12,19 +16,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field as dataclass_field
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
+from compliance_tracker.archive import DocumentArchive, LocalDiskArchive
 from compliance_tracker.config_schema import AppConfig
 from compliance_tracker.extracted_values import append_values
 from compliance_tracker.extraction import (
+    DocumentTypeCandidate,
     LLMClient,
     build_document_type_candidates,
     classify_and_extract,
-    extract_text,
+    extract_content,
 )
 from compliance_tracker.loaders import build_loader
 
 CONFIDENT_LEVELS = {"high", "medium"}
-SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls"}
+SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".jpg", ".jpeg", ".png"}
 
 
 @dataclass
@@ -52,6 +59,51 @@ class IntakeSummary:
     @property
     def skipped(self) -> list[IntakeFileOutcome]:
         return [o for o in self.outcomes if o.outcome == "skipped_unsupported_type"]
+
+
+def process_upload(
+    filename: str,
+    content: bytes,
+    archive: DocumentArchive,
+    known_asset_ids: list[str],
+    candidates: list[DocumentTypeCandidate],
+    record_values: Callable[[str, dict[str, str], str, str], None],
+    client: LLMClient | None = None,
+) -> IntakeFileOutcome:
+    """Classify+extract one file and, on a confident match, file it into the
+    archive and hand its extracted fields to `record_values(asset_id,
+    fields, source_filename, confidence)` -- a caller-supplied sink so this
+    function stays agnostic to whether extracted values land in a local CSV
+    (the CLI) or a Supabase table (the app). Never renames/deletes the
+    caller's original copy of the file -- that's the caller's job, since
+    only the CLI has an inbox file to clean up afterward."""
+    content_obj = extract_content((filename, content))
+    result = classify_and_extract(content_obj, known_asset_ids, candidates, client=client)
+
+    if result.confidence in CONFIDENT_LEVELS and result.asset_id and result.document_type_rule_id:
+        candidate = next(c for c in candidates if c.rule_id == result.document_type_rule_id)
+        target_name = candidate.filename_pattern.format(asset_id=result.asset_id)
+        archive.upload(candidate.directory, target_name, content)
+
+        if result.fields:
+            record_values(result.asset_id, result.fields, filename, result.confidence)
+
+        return IntakeFileOutcome(
+            source_filename=filename,
+            outcome="filed",
+            asset_id=result.asset_id,
+            document_type_rule_id=result.document_type_rule_id,
+            confidence=result.confidence,
+            target_path=Path(candidate.directory) / target_name,
+        )
+
+    return IntakeFileOutcome(
+        source_filename=filename,
+        outcome="needs_review",
+        asset_id=result.asset_id,
+        document_type_rule_id=result.document_type_rule_id,
+        confidence=result.confidence,
+    )
 
 
 def _log_row(log_path: Path, run_date: date, outcome: IntakeFileOutcome) -> None:
@@ -88,6 +140,13 @@ def run_intake(
     candidates = build_document_type_candidates(config)
     known_records = build_loader(config.source).load()
     known_asset_ids = [r[config.source.id_field] for r in known_records]
+    archive = LocalDiskArchive()
+
+    def record_values(asset_id: str, fields: dict[str, str], source_file: str, confidence: str) -> None:
+        append_values(
+            extracted_values_path, asset_id, fields,
+            source_file=source_file, confidence=confidence, run_date=run_date,
+        )
 
     summary = IntakeSummary()
     if not inbox_dir.exists():
@@ -106,42 +165,11 @@ def run_intake(
             summary.outcomes.append(outcome)
             continue
 
-        text = extract_text(path)
-        result = classify_and_extract(text, known_asset_ids, candidates, client=client)
-
-        if result.confidence in CONFIDENT_LEVELS and result.asset_id and result.document_type_rule_id:
-            candidate = next(c for c in candidates if c.rule_id == result.document_type_rule_id)
-            target_name = candidate.filename_pattern.format(asset_id=result.asset_id)
-            target_path = Path(candidate.directory) / target_name
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            path.rename(target_path)
-
-            if result.fields:
-                append_values(
-                    extracted_values_path,
-                    result.asset_id,
-                    result.fields,
-                    source_file=path.name,
-                    confidence=result.confidence,
-                    run_date=run_date,
-                )
-
-            outcome = IntakeFileOutcome(
-                source_filename=path.name,
-                outcome="filed",
-                asset_id=result.asset_id,
-                document_type_rule_id=result.document_type_rule_id,
-                confidence=result.confidence,
-                target_path=target_path,
-            )
-        else:
-            outcome = IntakeFileOutcome(
-                source_filename=path.name,
-                outcome="needs_review",
-                asset_id=result.asset_id,
-                document_type_rule_id=result.document_type_rule_id,
-                confidence=result.confidence,
-            )
+        outcome = process_upload(
+            path.name, path.read_bytes(), archive, known_asset_ids, candidates, record_values, client=client,
+        )
+        if outcome.outcome == "filed":
+            path.unlink()  # archive.upload() wrote a copy -- remove the inbox original
 
         _log_row(log_path, run_date, outcome)
         summary.outcomes.append(outcome)

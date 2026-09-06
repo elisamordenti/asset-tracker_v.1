@@ -11,10 +11,11 @@ from compliance_tracker.config_schema import (
     SourceConfig,
 )
 from compliance_tracker.extraction import (
+    DocumentContent,
     _RawExtraction,
     build_document_type_candidates,
     classify_and_extract,
-    extract_text,
+    extract_content,
 )
 
 
@@ -22,11 +23,11 @@ class FakeLLMClient:
     def __init__(self, response: _RawExtraction):
         self.response = response
         self.last_system = None
-        self.last_text = None
+        self.last_content = None
 
-    def parse_extraction(self, system, text):
+    def parse_extraction(self, system, content):
         self.last_system = system
-        self.last_text = text
+        self.last_content = content
         return self.response
 
 
@@ -78,7 +79,7 @@ def test_classify_and_extract_confident_match():
         fields=[{"field": "insurance_expiry", "value": "2027-01-15"}],
     ))
 
-    result = classify_and_extract("some pdf text", ["AST-1", "AST-2"], candidates, client=fake)
+    result = classify_and_extract(DocumentContent(text="some pdf text"), ["AST-1", "AST-2"], candidates, client=fake)
 
     assert result.asset_id == "AST-1"
     assert result.document_type_rule_id == "insurance_doc_on_file"
@@ -96,7 +97,7 @@ def test_classify_and_extract_rejects_unknown_asset_id():
         fields=[],
     ))
 
-    result = classify_and_extract("text", ["AST-1", "AST-2"], candidates, client=fake)
+    result = classify_and_extract(DocumentContent(text="text"), ["AST-1", "AST-2"], candidates, client=fake)
 
     assert result.asset_id is None
     assert result.confidence == "low"  # downgraded
@@ -112,7 +113,7 @@ def test_classify_and_extract_rejects_unknown_document_type():
         fields=[],
     ))
 
-    result = classify_and_extract("text", ["AST-1"], candidates, client=fake)
+    result = classify_and_extract(DocumentContent(text="text"), ["AST-1"], candidates, client=fake)
 
     assert result.document_type_rule_id is None
     assert result.confidence == "low"
@@ -128,7 +129,7 @@ def test_classify_and_extract_drops_malformed_date_field():
         fields=[{"field": "insurance_expiry", "value": "not-a-date"}],
     ))
 
-    result = classify_and_extract("text", ["AST-1"], candidates, client=fake)
+    result = classify_and_extract(DocumentContent(text="text"), ["AST-1"], candidates, client=fake)
 
     assert result.fields == {}  # malformed date silently dropped, not written
 
@@ -143,12 +144,26 @@ def test_classify_and_extract_keeps_field_with_no_declared_type():
         fields=[{"field": "permit_number", "value": "anything goes"}],
     ))
 
-    result = classify_and_extract("text", ["AST-1"], candidates, client=fake)
+    result = classify_and_extract(DocumentContent(text="text"), ["AST-1"], candidates, client=fake)
 
     assert result.fields == {"permit_number": "anything goes"}
 
 
-def test_extract_text_reads_excel_workbook(tmp_path):
+def test_classify_and_extract_passes_image_content_through_unchanged():
+    config = build_config_with_document_rules()
+    candidates = build_document_type_candidates(config)
+    fake = FakeLLMClient(_RawExtraction(
+        asset_id="AST-1", document_type="permit_doc_on_file", confidence="high", fields=[],
+    ))
+    image_content = DocumentContent(image_bytes=b"\x89PNG...", media_type="image/png")
+
+    classify_and_extract(image_content, ["AST-1"], candidates, client=fake)
+
+    assert fake.last_content is image_content
+    assert fake.last_content.image_bytes == b"\x89PNG..."
+
+
+def test_extract_content_reads_excel_workbook(tmp_path):
     from openpyxl import Workbook
 
     wb = Workbook()
@@ -159,19 +174,53 @@ def test_extract_text_reads_excel_workbook(tmp_path):
     path = tmp_path / "schedule.xlsx"
     wb.save(path)
 
-    text = extract_text(path)
+    content = extract_content(path)
 
-    assert "[Sheet: Technical Schedule]" in text
-    assert "Asset ID | Certification Expiry" in text
-    assert "AST-004 | 2028-01-15" in text
+    assert content.image_bytes is None
+    assert "[Sheet: Technical Schedule]" in content.text
+    assert "Asset ID | Certification Expiry" in content.text
+    assert "AST-004 | 2028-01-15" in content.text
 
 
-def test_extract_text_raises_for_unsupported_extension(tmp_path):
+def test_extract_content_reads_excel_from_in_memory_bytes(tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Asset ID"])
+    ws.append(["AST-1"])
+    path = tmp_path / "schedule.xlsx"
+    wb.save(path)
+
+    content = extract_content(("schedule.xlsx", path.read_bytes()))
+
+    assert "AST-1" in content.text
+
+
+def test_extract_content_dispatches_image_to_image_bytes(tmp_path):
+    path = tmp_path / "scan.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"fake-png-bytes")
+
+    content = extract_content(path)
+
+    assert content.text is None
+    assert content.image_bytes == path.read_bytes()
+    assert content.media_type == "image/png"
+
+
+def test_extract_content_dispatches_jpeg_from_in_memory_bytes():
+    content = extract_content(("photo.jpg", b"fake-jpeg-bytes"))
+
+    assert content.image_bytes == b"fake-jpeg-bytes"
+    assert content.media_type == "image/jpeg"
+
+
+def test_extract_content_raises_for_unsupported_extension(tmp_path):
     path = tmp_path / "notes.txt"
     path.write_text("hello", encoding="utf-8")
 
     try:
-        extract_text(path)
+        extract_content(path)
         assert False, "expected ValueError"
     except ValueError as e:
         assert ".txt" in str(e)

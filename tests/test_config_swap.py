@@ -7,6 +7,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from compliance_tracker.archive import LocalDiskArchive
 from compliance_tracker.config_schema import load_config
 from compliance_tracker.email_drafter import draft_emails
 from compliance_tracker.excel_report import generate_excel_report
@@ -19,7 +20,7 @@ REPO_ROOT = Path(__file__).parent.parent
 def run_domain(monkeypatch, tmp_path, config_relpath):
     monkeypatch.chdir(REPO_ROOT)
     config = load_config(config_relpath)
-    results = validate_assets(config)
+    results = validate_assets(config, archive=LocalDiskArchive())
 
     log_path = tmp_path / "reminder_log.csv"
     flagged_ids = [r.asset_id for r in results if r.violations]

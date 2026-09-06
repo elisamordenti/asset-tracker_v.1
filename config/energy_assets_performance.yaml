@@ -1,0 +1,70 @@
+# A second "lens" on the same energy asset registry as config/energy_assets.yaml
+# -- same physical assets (registry_key: energy_assets, same CSV), but a
+# different rule set: operational/financial monitoring instead of insurance
+# and permit compliance. Proves the config-driven design can offer multiple
+# monitoring views over one shared pool of assets, not just swap between
+# unrelated domains. Notes are shared too (same "Notes / Follow-up" label),
+# since a note is about the asset, not about which lens you're viewing it
+# through.
+
+domain: "Energy Assets — Performance & Maintenance"
+registry_key: energy_assets
+
+source:
+  type: csv
+  path: "data/energy_assets_sample.csv"
+  id_field: asset_id
+
+contact:
+  name_field: contact_name
+  email_field: contact_email
+
+rules:
+  - id: margin_min
+    field: margin_pct
+    type: min_value
+    min: 5
+    severity: warning
+    label: "Margin %"
+    message: "Margin {value}% is below the 5% minimum threshold for financing"
+
+  - id: downtime_max
+    field: downtime_hours
+    type: max_value
+    max: 100
+    severity: warning
+    label: "Downtime (hrs/yr)"
+    message: "Downtime {value} hrs/yr exceeds the 100 hr maximum"
+
+  - id: maintenance_status_valid
+    field: maintenance_status
+    type: allowed_values
+    values: ["current", "scheduled"]
+    severity: warning
+    label: "Maintenance Status"
+    message: "Maintenance status '{value}' is not acceptable (must be current or scheduled)"
+
+excel:
+  info_columns:
+    - {field: asset_id, label: "Asset ID"}
+    - {field: asset_name, label: "Asset Name"}
+    - {field: location, label: "Location"}
+    - {field: contact_name, label: "Responsible Contact"}
+  notes_columns:
+    - {field: notes, label: "Notes / Follow-up"}
+
+email:
+  subject_template: "Action Required: Performance Issues for {asset_name}"
+  body_template: |
+    Hi {contact_name},
+
+    This is follow-up reminder #{reminder_number} regarding operational
+    performance for {asset_name} ({asset_id}):
+
+    {issues_list}
+
+    {deadline_line}
+    Please address the above at your earliest convenience.
+
+    Thanks,
+    Compliance Tracker

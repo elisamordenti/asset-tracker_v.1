@@ -27,6 +27,7 @@ class FakeDBClient:
         self.assets = {}  # (domain, asset_id) -> {"record": ..., "notes": ...}
         self.reminders = []
         self.extraction_logs = []
+        self.extracted_values = []
 
     def upsert_record(self, domain, asset_id, record):
         key = (domain, asset_id)
@@ -55,20 +56,30 @@ class FakeDBClient:
     def append_extraction_log(self, domain, entry):
         self.extraction_logs.append({"domain": domain, **entry})
 
+    def append_extracted_value(self, domain, asset_id, field, value, source_file, confidence, extracted_at):
+        self.extracted_values.append({
+            "domain": domain, "asset_id": asset_id, "field": field, "value": value,
+            "source_file": source_file, "confidence": confidence, "extracted_at": extracted_at,
+        })
 
-def build_config(tmp_path, csv_content):
+    def get_extracted_values(self, domain):
+        return [r for r in self.extracted_values if r["domain"] == domain]
+
+
+def build_config(tmp_path, csv_content, domain="Test Domain", registry_key="", rules=None):
     csv_path = tmp_path / "assets.csv"
     csv_path.write_text(csv_content, encoding="utf-8")
     return AppConfig(
-        domain="Test Domain",
+        domain=domain,
         source=SourceConfig(type="csv", path=str(csv_path), id_field="asset_id"),
         contact=ContactConfig(name_field="contact_name", email_field="contact_email"),
-        rules=[
+        rules=rules if rules is not None else [
             RuleConfig(id="margin_min", field="margin_pct", type="min_value", severity="warning",
                        message="low margin", label="Margin", params={"min": 5}),
         ],
         excel=ExcelConfig(info_columns=[ColumnConfig(field="asset_id", label="ID")]),
         email=EmailConfig(subject_template="s", body_template="b"),
+        registry_key=registry_key,
     )
 
 
@@ -76,7 +87,7 @@ def test_sync_registry_upserts_every_record(tmp_path):
     config = build_config(tmp_path, "asset_id,margin_pct,contact_name,contact_email\nAST-1,10,Dana,dana@example.com\n")
     client = FakeDBClient()
 
-    count = sync_registry(client, config, tmp_path / "output")
+    count = sync_registry(client, config)
 
     assert count == 1
     assert client.get_assets("Test Domain")[0]["record"]["margin_pct"] == "10"
@@ -85,19 +96,34 @@ def test_sync_registry_upserts_every_record(tmp_path):
 def test_sync_registry_never_touches_existing_notes(tmp_path):
     config = build_config(tmp_path, "asset_id,margin_pct,contact_name,contact_email\nAST-1,10,Dana,dana@example.com\n")
     client = FakeDBClient()
-    sync_registry(client, config, tmp_path / "output")
+    sync_registry(client, config)
     save_note(client, "Test Domain", "AST-1", {"Notes": "already following up"})
 
-    sync_registry(client, config, tmp_path / "output")  # re-sync
+    sync_registry(client, config)  # re-sync
 
     assets = client.get_assets("Test Domain")
     assert assets[0]["notes"] == {"Notes": "already following up"}
 
 
+def test_sync_registry_applies_latest_extracted_value_overlay(tmp_path):
+    """The app's equivalent of the CLI's local extracted_values.csv overlay
+    -- values the upload pipeline recorded in the extracted_values table
+    must be layered onto the base CSV registry at sync time."""
+    config = build_config(tmp_path, "asset_id,margin_pct,contact_name,contact_email\nAST-1,10,Dana,dana@example.com\n")
+    client = FakeDBClient()
+    client.append_extracted_value(
+        "Test Domain", "AST-1", "margin_pct", "42", "doc.pdf", "high", "2026-08-01"
+    )
+
+    sync_registry(client, config)
+
+    assert client.get_assets("Test Domain")[0]["record"]["margin_pct"] == "42"
+
+
 def test_load_results_and_notes_runs_validator_against_db_records(tmp_path):
     config = build_config(tmp_path, "asset_id,margin_pct,contact_name,contact_email\nAST-1,2,Dana,dana@example.com\n")
     client = FakeDBClient()
-    sync_registry(client, config, tmp_path / "output")
+    sync_registry(client, config)
 
     results, notes = load_results_and_notes(client, config)
 
@@ -132,3 +158,36 @@ def test_record_extraction_outcome_logs_needs_review(tmp_path):
         {"domain": "Test Domain", "source_filename": "scan.pdf", "outcome": "needs_review",
          "asset_id": "", "document_type": "", "confidence": "low"}
     ]
+
+
+def test_two_lenses_sharing_a_registry_key_see_the_same_synced_assets(tmp_path):
+    """The core "one filing cabinet, different views" behavior: lens A syncs
+    the shared pool; lens B (different domain, same registry_key, same
+    underlying CSV) must see those same assets immediately, with no sync of
+    its own."""
+    csv_content = "asset_id,margin_pct,downtime_hours,contact_name,contact_email\nAST-1,2,150,Dana,dana@example.com\n"
+
+    lens_a = build_config(
+        tmp_path, csv_content, domain="Energy — Compliance", registry_key="energy_assets",
+        rules=[RuleConfig(id="margin_min", field="margin_pct", type="min_value", severity="warning",
+                           message="low margin", label="Margin", params={"min": 5})],
+    )
+    lens_b = build_config(
+        tmp_path, csv_content, domain="Energy — Performance", registry_key="energy_assets",
+        rules=[RuleConfig(id="downtime_max", field="downtime_hours", type="max_value", severity="warning",
+                           message="too much downtime", label="Downtime", params={"max": 100})],
+    )
+
+    client = FakeDBClient()
+    sync_registry(client, lens_a)  # sync under lens A only
+
+    # Lens B never synced, but shares the registry key -- must see AST-1.
+    results_b, _ = load_results_and_notes(client, lens_b)
+    assert len(results_b) == 1
+    assert results_b[0].asset_id == "AST-1"
+    assert results_b[0].violations  # downtime 150 > 100, per lens B's own rules
+
+    # A note saved under lens A must be visible reading through lens B too.
+    save_note(client, lens_a.registry_key, "AST-1", {"Notes": "flagged by ops"})
+    _, notes_b = load_results_and_notes(client, lens_b)
+    assert notes_b["AST-1"] == {"Notes": "flagged by ops"}

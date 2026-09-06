@@ -10,9 +10,8 @@ capable of checking, regardless of which domain config points at it.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import date
-from pathlib import Path
 from typing import Any, Callable
 
 from compliance_tracker.config_schema import RuleConfig
@@ -25,6 +24,17 @@ class RuleResult:
     severity: str
     value: str
     message: str
+
+
+@dataclass
+class RuleContext:
+    """Everything a rule check needs beyond the record itself. Today this is
+    only the document archive's file listing (one prefetched set per unique
+    directory -- see validator.py), keyed by directory so document_on_file
+    checks are a plain set-membership test instead of a filesystem/network
+    call per asset per rule."""
+
+    archive_index: dict[str, set[str]] = dataclass_field(default_factory=dict)
 
 
 def _check_required(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
@@ -73,12 +83,15 @@ def _resolve_expected_filename(params: dict[str, Any], record: dict[str, str]) -
     return params["filename_pattern"].format(**record)
 
 
-def _check_document_on_file(value: str, params: dict[str, Any], record: dict[str, str]) -> bool:
-    expected_name = _resolve_expected_filename(params, record)
-    return (Path(params["directory"]) / expected_name).exists()
+def _check_document_on_file(value: str, params: dict[str, Any], record: dict[str, str], context: RuleContext) -> bool:
+    # `value` is already the resolved expected filename (see resolve_value) --
+    # a plain membership check against the prefetched directory listing.
+    return value in context.archive_index.get(params["directory"], set())
 
 
-RULE_CHECKS: dict[str, Callable[[str, dict[str, Any], dict[str, str]], bool]] = {
+# document_on_file's check takes a 4th RuleContext argument (see
+# evaluate_rule); every other check takes just these three.
+RULE_CHECKS: dict[str, Callable[..., bool]] = {
     "required": _check_required,
     "not_expired": _check_not_expired,
     "min_value": _check_min_value,
@@ -99,12 +112,21 @@ def resolve_value(rule: RuleConfig, record: dict[str, str]) -> str:
     return record.get(rule.field, "")
 
 
-def evaluate_rule(rule: RuleConfig, record: dict[str, str]) -> RuleResult | None:
-    """Return a RuleResult if the record fails the rule, None if it passes."""
+def evaluate_rule(rule: RuleConfig, record: dict[str, str], context: RuleContext | None = None) -> RuleResult | None:
+    """Return a RuleResult if the record fails the rule, None if it passes.
+    `context` is only consulted for document_on_file rules; every other
+    rule type ignores it, so callers with no document_on_file rules in play
+    (e.g. most tests) can omit it entirely."""
     check_fn = RULE_CHECKS[rule.type]
     value = resolve_value(rule, record)
+    context = context or RuleContext()
 
-    if check_fn(value, rule.params, record):
+    passed = (
+        check_fn(value, rule.params, record, context)
+        if rule.type == "document_on_file"
+        else check_fn(value, rule.params, record)
+    )
+    if passed:
         return None
 
     # record is spread first so the freshly-read `value` always wins if a

@@ -87,6 +87,16 @@ class AppConfig:
     rules: list[RuleConfig]
     excel: ExcelConfig
     email: EmailConfig
+    # Which shared pool of physical assets this config's data belongs to
+    # (the partition key database.py uses). Defaults to `domain` -- most
+    # configs are their own isolated pool. Two configs that set the SAME
+    # registry_key are different "lenses" (different rules, different
+    # tracked columns) over the exact same synced assets.
+    registry_key: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.registry_key:
+            self.registry_key = self.domain
 
 
 def _require_keys(d: dict, keys: list[str], context: str) -> None:
@@ -230,4 +240,5 @@ def load_config(path: str | Path) -> AppConfig:
         rules=rules,
         excel=excel,
         email=_parse_email(raw["email"]),
+        registry_key=raw.get("registry_key", ""),
     )

@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from compliance_tracker.config_schema import RuleConfig
-from compliance_tracker.rules import evaluate_rule
+from compliance_tracker.rules import RuleContext, evaluate_rule
 
 
 def make_rule(**overrides):
@@ -132,21 +132,21 @@ def test_message_template_can_reference_other_record_fields():
     assert result.message == "Solar Farm Alpha is missing a permit"
 
 
-def test_document_on_file_passes_when_file_exists(tmp_path):
-    (tmp_path / "AST-1_permit.pdf").write_bytes(b"%PDF-1.4\n%%EOF")
+def test_document_on_file_passes_when_file_exists():
     rule = make_rule(
         type="document_on_file", field=None,
-        params={"directory": str(tmp_path), "filename_pattern": "{asset_id}_permit.pdf"},
+        params={"directory": "some/dir", "filename_pattern": "{asset_id}_permit.pdf"},
     )
-    assert evaluate_rule(rule, {"asset_id": "AST-1"}) is None
+    context = RuleContext(archive_index={"some/dir": {"AST-1_permit.pdf"}})
+    assert evaluate_rule(rule, {"asset_id": "AST-1"}, context) is None
 
 
-def test_document_on_file_fails_when_file_missing(tmp_path):
+def test_document_on_file_fails_when_file_missing():
     rule = make_rule(
         type="document_on_file", field=None,
-        params={"directory": str(tmp_path), "filename_pattern": "{asset_id}_permit.pdf"},
+        params={"directory": "some/dir", "filename_pattern": "{asset_id}_permit.pdf"},
     )
-    result = evaluate_rule(rule, {"asset_id": "AST-1"})
+    result = evaluate_rule(rule, {"asset_id": "AST-1"})  # no context -- empty archive index
     assert result is not None
     assert result.value == "AST-1_permit.pdf"
 

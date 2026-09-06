@@ -7,24 +7,38 @@ below, never against the `supabase` package directly -- that import only
 happens inside build_supabase_client(), so the test suite never needs a
 real Supabase project or network access.
 
-The `assets` table stores one row per (domain, asset_id) with two separate
-pieces: `record` (the full merged CSV + extracted-values row -- always
-refreshed by sync_registry(), never hand-edited) and `notes` (free text the
-user types directly into the tracker -- never touched by sync_registry()).
-This mirrors the same non-destructive-merge principle used for the Excel and
-Google Sheets notes columns, just backed by a real database instead of
-reading a file back before overwriting it.
+The `assets` table stores one row per (registry_key, asset_id) with two
+separate pieces: `record` (the full merged CSV + extracted-values row --
+always refreshed by sync_registry(), never hand-edited) and `notes` (free
+text the user types directly into the tracker -- never touched by
+sync_registry()). This mirrors the same non-destructive-merge principle used
+for the Excel and Google Sheets notes columns, just backed by a real
+database instead of reading a file back before overwriting it.
+
+The `extracted_values` table is this app's equivalent of the CLI's local
+extracted_values.csv overlay (extracted_values.py): every value the intake
+pipeline pulls from an uploaded document is appended here (never mutating
+`assets.record` directly), and sync_registry() layers the most recent value
+per (asset_id, field) on top of the base CSV registry, same as the CLI. This
+keeps the app fully cloud-ready -- nothing about a Supabase-backed run
+depends on local disk surviving between requests.
+
+Partitioning by `config.registry_key` rather than `config.domain` is
+deliberate: two configs can set the same registry_key to become different
+"lenses" (different rules, different tracked columns) over the exact same
+synced pool of assets, instead of each lens getting its own empty pool just
+because it has a different display name.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from typing import Any, Protocol
 
+from compliance_tracker.archive import DocumentArchive
 from compliance_tracker.config_schema import AppConfig
-from compliance_tracker.extracted_values import apply_to_records
+from compliance_tracker.extracted_values import apply_to_records, latest_from_rows
 from compliance_tracker.loaders import build_loader
 from compliance_tracker.reminder_log import ReminderSummary, summarize
 from compliance_tracker.validator import AssetResult, validate_assets
@@ -37,33 +51,32 @@ class DBClient(Protocol):
     def append_reminder(self, domain: str, asset_id: str, sent_date: str, reminder_number: int) -> None: ...
     def get_reminders(self, domain: str) -> list[dict[str, Any]]: ...  # [{asset_id, date, reminder_number}]
     def append_extraction_log(self, domain: str, entry: dict[str, str]) -> None: ...
+    def append_extracted_value(
+        self, domain: str, asset_id: str, field: str, value: str, source_file: str, confidence: str, extracted_at: str
+    ) -> None: ...
+    def get_extracted_values(self, domain: str) -> list[dict[str, Any]]: ...  # [{asset_id, field, value, extracted_at}]
 
 
-def sync_registry(client: DBClient, config: AppConfig, base_output_dir: str | Path) -> int:
-    """Load the base CSV registry, merge in extracted_values.csv if one
-    exists (unchanged from the local/Sheets paths), and upsert every asset's
+def sync_registry(client: DBClient, config: AppConfig) -> int:
+    """Load the base CSV registry, merge in this registry's extracted_values
+    overlay (from the intake/upload pipeline), and upsert every asset's
     `record`. Never touches `notes`."""
     base_records = build_loader(config.source).load()
-
-    extracted_values_path = Path(base_output_dir) / "extracted_values.csv"
-    records = (
-        apply_to_records(base_records, extracted_values_path, config.source.id_field)
-        if extracted_values_path.exists()
-        else base_records
-    )
+    latest = latest_from_rows(client.get_extracted_values(config.registry_key))
+    records = apply_to_records(base_records, latest, config.source.id_field)
 
     for record in records:
-        client.upsert_record(config.domain, record[config.source.id_field], record)
+        client.upsert_record(config.registry_key, record[config.source.id_field], record)
     return len(records)
 
 
 def load_results_and_notes(
-    client: DBClient, config: AppConfig
+    client: DBClient, config: AppConfig, archive: DocumentArchive | None = None
 ) -> tuple[list[AssetResult], dict[str, dict[str, str]]]:
-    rows = client.get_assets(config.domain)
+    rows = client.get_assets(config.registry_key)
     records = [row["record"] for row in rows]
     notes_by_asset = {row["asset_id"]: row.get("notes") or {} for row in rows}
-    results = validate_assets(config, records=records)
+    results = validate_assets(config, records=records, archive=archive)
     return results, notes_by_asset
 
 
@@ -147,3 +160,25 @@ class _SupabaseDBClient:
 
     def append_extraction_log(self, domain: str, entry: dict[str, str]) -> None:
         self._raw.table("extraction_log").insert({"domain": domain, **entry}).execute()
+
+    def append_extracted_value(
+        self, domain: str, asset_id: str, field: str, value: str, source_file: str, confidence: str, extracted_at: str
+    ) -> None:
+        self._raw.table("extracted_values").insert({
+            "domain": domain,
+            "asset_id": asset_id,
+            "field": field,
+            "value": value,
+            "source_file": source_file,
+            "confidence": confidence,
+            "extracted_at": extracted_at,
+        }).execute()
+
+    def get_extracted_values(self, domain: str) -> list[dict[str, Any]]:
+        resp = (
+            self._raw.table("extracted_values")
+            .select("asset_id, field, value, extracted_at")
+            .eq("domain", domain)
+            .execute()
+        )
+        return resp.data

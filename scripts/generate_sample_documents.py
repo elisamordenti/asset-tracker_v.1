@@ -154,8 +154,8 @@ PORTFOLIO_INBOX = [
 
 def write_inbox_excel(directory: Path, filename: str, sheet_title: str, rows: list[tuple[str, str]]) -> None:
     """Some incoming documents are Excel technical/insurance schedules, not
-    PDFs -- extraction.extract_text() reads workbook content the same way it
-    reads a PDF's text, so this exercises that path with a real .xlsx file."""
+    PDFs -- extraction.extract_content() reads workbook content the same way
+    it reads a PDF's text, so this exercises that path with a real .xlsx file."""
     from openpyxl import Workbook
 
     directory.mkdir(parents=True, exist_ok=True)

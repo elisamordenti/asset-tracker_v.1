@@ -39,6 +39,22 @@ def append_values(
             writer.writerow([run_date.isoformat(), asset_id, field_name, value, source_file, confidence])
 
 
+def latest_from_rows(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    """{asset_id: {field: value}}, most recent row per (asset_id, field).
+    Shared reduction over already-loaded rows, whether they came from the
+    CLI's local CSV (a "date" key) or the Supabase-backed app's
+    extracted_values table (an "extracted_at" key) -- whichever is present."""
+    latest: dict[str, dict[str, str]] = {}
+    seen_dates: dict[tuple[str, str], str] = {}
+    for row in rows:
+        key = (row["asset_id"], row["field"])
+        recency = row.get("date") or row.get("extracted_at") or ""
+        if key not in seen_dates or recency >= seen_dates[key]:
+            seen_dates[key] = recency
+            latest.setdefault(row["asset_id"], {})[row["field"]] = row["value"]
+    return latest
+
+
 def load_latest_values(path: str | Path) -> dict[str, dict[str, str]]:
     """{asset_id: {field: value}}, most recent row per (asset_id, field)."""
     path = Path(path)
@@ -47,21 +63,18 @@ def load_latest_values(path: str | Path) -> dict[str, dict[str, str]]:
 
     with path.open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
-
-    latest: dict[str, dict[str, str]] = {}
-    seen_dates: dict[tuple[str, str], str] = {}
-    for row in rows:
-        key = (row["asset_id"], row["field"])
-        if key not in seen_dates or row["date"] >= seen_dates[key]:
-            seen_dates[key] = row["date"]
-            latest.setdefault(row["asset_id"], {})[row["field"]] = row["value"]
-    return latest
+    return latest_from_rows(rows)
 
 
-def apply_to_records(records: list[dict[str, str]], path: str | Path, id_field: str) -> list[dict[str, str]]:
-    """Overlay extracted values on top of loaded base records. Extraction
-    never invents new asset rows -- only fields on assets already present."""
-    latest = load_latest_values(path)
+def apply_to_records(
+    records: list[dict[str, str]], latest: dict[str, dict[str, str]], id_field: str
+) -> list[dict[str, str]]:
+    """Overlay extracted values on top of loaded base records. `latest` is
+    an already-computed {asset_id: {field: value}} mapping -- pass
+    load_latest_values(csv_path) for the CLI's local-CSV overlay, or
+    latest_from_rows(db.get_extracted_values(registry_key)) for the
+    Supabase-backed app. Extraction never invents new asset rows -- only
+    fields on assets already present."""
     merged = []
     for record in records:
         overlay = latest.get(record.get(id_field, ""), {})

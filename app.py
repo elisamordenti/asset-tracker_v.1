@@ -1,32 +1,37 @@
 """Asset Compliance Tracker -- primary interface for day-to-day use.
 
 Run with:
-    pip install -e ".[webapp]"
+    pip install -e ".[webapp,llm]"
     streamlit run app.py
 
 Requires SUPABASE_URL and SUPABASE_KEY (service-role key) as environment
 variables -- see database.py's module docstring for the schema to run in
-Supabase's SQL editor first. Optional: ANTHROPIC_API_KEY for the document
-upload/classify feature; EMAIL_SEND_MODE=live + SMTP_* to actually send
-reminder emails instead of just drafting them.
+Supabase's SQL editor first, and archive.py's docstring for the Storage
+bucket a document upload gets filed into (name it via
+SUPABASE_STORAGE_BUCKET, default "documents"). Optional: ANTHROPIC_API_KEY
+for the document upload/classify feature (PDF, Excel, or a photo/scan --
+images go straight to Claude's vision input, no OCR step); EMAIL_SEND_MODE=live
++ SMTP_* to actually send reminder emails instead of just drafting them.
 
 This file is UI glue only -- every piece of actual logic it calls into
 (database.py, validator.py, excel_report.py, email_drafter.py,
-extraction.py) is independently unit-tested; this page is verified by
-running it, not by an automated test.
+extraction.py, intake.py, reminders.py, filters.py) is independently
+unit-tested; this page is verified by running it, not by an automated test.
 """
 
 from __future__ import annotations
 
 import os
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
 
+from compliance_tracker.archive import build_supabase_storage_archive
 from compliance_tracker.config_schema import load_config
 from compliance_tracker.database import (
-    append_reminders,
     build_supabase_client,
     load_reminder_summary,
     load_results_and_notes,
@@ -34,19 +39,17 @@ from compliance_tracker.database import (
     save_note,
     sync_registry,
 )
-from compliance_tracker.email_drafter import draft_emails, send_drafted_emails
 from compliance_tracker.excel_report import build_tracker_table, generate_excel_report
-from compliance_tracker.extracted_values import append_values
-from compliance_tracker.extraction import build_document_type_candidates, classify_and_extract, extract_text
-from compliance_tracker.intake import IntakeFileOutcome
+from compliance_tracker.extraction import build_document_type_candidates
+from compliance_tracker.filters import apply_filters, infer_filter_specs
+from compliance_tracker.intake import process_upload
+from compliance_tracker.reminders import run_reminder_cycle
+
+load_dotenv()  # picks up a local .env file, if present, before any os.environ.get() below
 
 st.set_page_config(page_title="Asset Compliance Tracker", layout="wide")
 
 CONFIG_DIR = Path("config")
-
-
-def _slugify(text: str) -> str:
-    return "".join(c.lower() if c.isalnum() else "_" for c in text).strip("_")
 
 
 @st.cache_resource
@@ -57,6 +60,17 @@ def get_client():
         st.error("Set SUPABASE_URL and SUPABASE_KEY environment variables before running this app.")
         st.stop()
     return build_supabase_client(url, key)
+
+
+@st.cache_resource
+def get_archive():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        st.error("Set SUPABASE_URL and SUPABASE_KEY environment variables before running this app.")
+        st.stop()
+    bucket = os.environ.get("SUPABASE_STORAGE_BUCKET", "documents")
+    return build_supabase_storage_archive(url, key, bucket)
 
 
 def decorate_rule_columns(config, ordered, rows) -> list[list]:
@@ -75,6 +89,39 @@ def decorate_rule_columns(config, ordered, rows) -> list[list]:
     return decorated
 
 
+def render_filter_widgets(specs) -> dict:
+    """Streamlit-touching half of the dynamic filter feature (see
+    filters.py for the pure inference/apply logic). One widget per inferred
+    column, kept in a collapsed sidebar section so a wide portfolio's info
+    columns don't crowd out the existing Status filter."""
+    values = {}
+    with st.sidebar.expander(f"Filters ({len(specs)} field(s))"):
+        for spec in specs:
+            if spec.kind == "categorical":
+                values[spec.column] = st.multiselect(spec.column, spec.options, key=f"filter_{spec.column}")
+            elif spec.kind == "text":
+                values[spec.column] = st.text_input(spec.column, key=f"filter_{spec.column}")
+            elif spec.kind == "numeric_range":
+                if spec.min_value == spec.max_value:
+                    values[spec.column] = None
+                else:
+                    values[spec.column] = st.slider(
+                        spec.column, float(spec.min_value), float(spec.max_value),
+                        (float(spec.min_value), float(spec.max_value)), key=f"filter_{spec.column}",
+                    )
+            elif spec.kind == "date_range":
+                if spec.min_value == spec.max_value:
+                    values[spec.column] = None
+                else:
+                    picked = st.date_input(
+                        spec.column, (spec.min_value, spec.max_value), key=f"filter_{spec.column}",
+                    )
+                    # date_input returns a single date, not a (low, high) pair,
+                    # until the user has picked both ends of the range.
+                    values[spec.column] = picked if isinstance(picked, tuple) and len(picked) == 2 else None
+    return values
+
+
 def main():
     st.title("Asset Compliance Tracker")
 
@@ -84,27 +131,30 @@ def main():
         st.stop()
 
     configs = {}
+    config_paths = {}
     for path in config_files:
         config = load_config(path)
         configs[config.domain] = config
+        config_paths[config.domain] = path
 
     domain_name = st.sidebar.selectbox("Domain", list(configs.keys()))
     config = configs[domain_name]
-    base_output_dir = Path("output") / _slugify(domain_name)
+    base_output_dir = Path("output") / config.registry_key
 
     client = get_client()
+    archive = get_archive()
 
     if st.sidebar.button("Sync from registry"):
-        n = sync_registry(client, config, base_output_dir)
+        n = sync_registry(client, config)
         st.sidebar.success(f"Synced {n} asset(s) from the registry.")
         st.rerun()
 
-    results, notes_by_asset = load_results_and_notes(client, config)
+    results, notes_by_asset = load_results_and_notes(client, config, archive=archive)
     if not results:
         st.info("No assets loaded yet -- click 'Sync from registry' in the sidebar.")
         st.stop()
 
-    reminder_summary = load_reminder_summary(client, domain_name)
+    reminder_summary = load_reminder_summary(client, config.registry_key)
     flagged = [r for r in results if r.violations]
 
     col1, col2, col3 = st.columns(3)
@@ -125,6 +175,12 @@ def main():
 
     notes_labels = [c.label for c in config.excel.notes_columns]
     id_label = headers[0]
+
+    filterable_columns = [c.label for c in config.excel.info_columns[1:]] + notes_labels
+    filter_specs = infer_filter_specs(df, filterable_columns)
+    filter_values = render_filter_widgets(filter_specs)
+    df = apply_filters(df, filter_specs, filter_values)
+
     column_config = {h: st.column_config.Column(disabled=True) for h in headers if h not in notes_labels}
 
     st.subheader("Tracker")
@@ -144,7 +200,7 @@ def main():
                     current_notes[label] = new_val
                     row_changed = True
             if row_changed:
-                save_note(client, domain_name, asset_id, current_notes)
+                save_note(client, config.registry_key, asset_id, current_notes)
                 changed += 1
         st.success(f"Saved {changed} note edit(s).")
         st.rerun()
@@ -153,17 +209,22 @@ def main():
     st.subheader("Reminders")
     st.write(f"{len(flagged)} of {len(results)} assets are flagged.")
     if st.button("Draft reminders for flagged assets"):
-        append_reminders(client, domain_name, [r.asset_id for r in flagged])
-        reminder_summary = load_reminder_summary(client, domain_name)
-        drafts = draft_emails(config, results, reminder_summary, base_output_dir / "emails")
-        st.success(f"Drafted {len(drafts)} email(s) to {base_output_dir / 'emails'}")
-        if os.environ.get("EMAIL_SEND_MODE") == "live":
-            try:
-                sent = send_drafted_emails(drafts)
-                st.success(f"Sent {sent} email(s).")
-            except RuntimeError as e:
-                st.error(str(e))
+        outcome = run_reminder_cycle(
+            config, client, base_output_dir,
+            send=os.environ.get("EMAIL_SEND_MODE") == "live",
+            archive=archive,
+        )
+        st.success(f"Drafted {len(outcome.drafts)} email(s) to {base_output_dir / 'emails'}")
+        if outcome.sent is not None:
+            st.success(f"Sent {outcome.sent} email(s).")
+        elif outcome.send_error:
+            st.error(outcome.send_error)
         st.rerun()
+    st.caption(
+        "This only runs when someone clicks the button above. To send reminders on a "
+        f"schedule instead, run `python scripts/send_reminders.py --config {config_paths[domain_name]} "
+        "--send` from whatever scheduler you end up hosting this on (cron, a GitHub Action, Task Scheduler, ...)."
+    )
 
     st.divider()
     st.subheader("Export")
@@ -174,54 +235,34 @@ def main():
     st.divider()
     st.subheader("Upload a document")
     uploaded = st.file_uploader(
-        "Drop a PDF or Excel file (any filename -- it gets classified automatically)",
-        type=["pdf", "xlsx", "xls"],
+        "Drop a PDF, Excel file, or a photo/scan (any filename -- it gets classified automatically)",
+        type=["pdf", "xlsx", "xls", "jpg", "jpeg", "png"],
     )
     if uploaded is not None and st.button("Classify & file"):
         if not os.environ.get("ANTHROPIC_API_KEY"):
             st.error("Set ANTHROPIC_API_KEY to use document classification.")
         else:
-            tmp_path = base_output_dir / "_uploads" / uploaded.name
-            tmp_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path.write_bytes(uploaded.getvalue())
-
+            content = uploaded.getvalue()
             candidates = build_document_type_candidates(config)
             known_ids = [r.asset_id for r in results]
-            text = extract_text(tmp_path)
-            extraction_result = classify_and_extract(text, known_ids, candidates)
 
-            if extraction_result.confidence in {"high", "medium"} and extraction_result.asset_id and extraction_result.document_type_rule_id:
-                candidate = next(c for c in candidates if c.rule_id == extraction_result.document_type_rule_id)
-                target_name = candidate.filename_pattern.format(asset_id=extraction_result.asset_id)
-                target_path = Path(candidate.directory) / target_name
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                tmp_path.rename(target_path)
-
-                if extraction_result.fields:
-                    append_values(
-                        base_output_dir / "extracted_values.csv",
-                        extraction_result.asset_id,
-                        extraction_result.fields,
-                        source_file=uploaded.name,
-                        confidence=extraction_result.confidence,
+            def record_values(asset_id, fields, source_file, confidence):
+                extracted_at = date.today().isoformat()
+                for field_name, value in fields.items():
+                    client.append_extracted_value(
+                        config.registry_key, asset_id, field_name, value, source_file, confidence, extracted_at
                     )
-                    sync_registry(client, config, base_output_dir)
 
-                outcome = IntakeFileOutcome(
-                    source_filename=uploaded.name, outcome="filed",
-                    asset_id=extraction_result.asset_id, document_type_rule_id=extraction_result.document_type_rule_id,
-                    confidence=extraction_result.confidence, target_path=target_path,
-                )
-                st.success(f"Filed as {target_path.name}")
+            outcome = process_upload(uploaded.name, content, archive, known_ids, candidates, record_values)
+
+            if outcome.outcome == "filed":
+                sync_registry(client, config)
+                st.success(f"Filed as {outcome.target_path.name}")
             else:
-                outcome = IntakeFileOutcome(
-                    source_filename=uploaded.name, outcome="needs_review",
-                    asset_id=extraction_result.asset_id, document_type_rule_id=extraction_result.document_type_rule_id,
-                    confidence=extraction_result.confidence,
-                )
-                st.warning("Couldn't confidently classify this document -- left for manual review.")
+                archive.upload("_pending_review", uploaded.name, content)
+                st.warning("Couldn't confidently classify this document -- filed under _pending_review for manual review.")
 
-            record_extraction_outcome(client, domain_name, outcome)
+            record_extraction_outcome(client, config.registry_key, outcome)
             st.rerun()
 
 

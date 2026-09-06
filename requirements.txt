@@ -1,3 +1,9 @@
-pyyaml>=6.0
-openpyxl>=3.1
-pytest>=8.0
+# For the Streamlit web app (app.py) plus document classification/upload.
+# This installs the current project itself (see pyproject.toml) with its
+# "webapp" and "llm" extras -- keeping every dependency version pinned in
+# one place instead of drifting out of sync with pyproject.toml. Run from
+# the repo root: pip install -r requirements.txt
+#
+# For CLI-only use without the web app or document upload, install just the
+# extras you need instead, e.g.: pip install -e ".[sheets]"
+.[webapp,llm]

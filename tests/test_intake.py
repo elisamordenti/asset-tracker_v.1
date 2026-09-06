@@ -10,7 +10,7 @@ from compliance_tracker.config_schema import (
     SourceConfig,
 )
 from compliance_tracker.extracted_values import load_latest_values
-from compliance_tracker.extraction import _RawExtraction
+from compliance_tracker.extraction import DocumentContent, _RawExtraction
 from compliance_tracker.intake import run_intake
 
 
@@ -58,7 +58,7 @@ def test_confident_match_is_filed_and_logged(tmp_path):
         fields=[{"field": "insurance_expiry", "value": "2027-01-15"}],
     ))
 
-    with patch("compliance_tracker.intake.extract_text", return_value="dummy text"):
+    with patch("compliance_tracker.intake.extract_content", return_value=DocumentContent(text="dummy text")):
         summary = run_intake(
             config, inbox_dir, tmp_path / "extracted_values.csv", tmp_path / "extraction_log.csv", client=fake
         )
@@ -87,7 +87,7 @@ def test_low_confidence_stays_in_inbox_and_needs_review(tmp_path):
         asset_id=None, document_type=None, confidence="low", fields=[],
     ))
 
-    with patch("compliance_tracker.intake.extract_text", return_value="dummy text"):
+    with patch("compliance_tracker.intake.extract_content", return_value=DocumentContent(text="dummy text")):
         summary = run_intake(
             config, inbox_dir, tmp_path / "extracted_values.csv", tmp_path / "extraction_log.csv", client=fake
         )

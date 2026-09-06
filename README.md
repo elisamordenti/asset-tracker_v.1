@@ -38,14 +38,14 @@ All data in this repo is synthetic. Nothing here comes from a real client.
 ## How it works
 
 ```
-Raw inbox (PDFs) --> intake: Claude classify + extract --> Document archive
-                                     |                       + extracted_values.csv
-                                     v                              |
-                          extraction_log.csv                        v
-                        (needs-review trail)          CSV registry (base layer)
+Raw inbox/upload      --> intake: Claude classify + extract --> Document archive
+(PDF, Excel, photo)                  |                       (local disk, or Supabase Storage)
+                                      v                              |
+                           extraction log                            v
+                         (needs-review trail)          CSV registry (base layer)
                                                                      |
                                                                      v
-                                              Loader --> Validator --> Tracker (Excel, or a live Google Sheet)
+                                              Loader --> Validator --> Tracker (Excel, a live Google Sheet, or Supabase)
                                                              |               |
                                                        Rules (YAML)    Audit Log (full trail)
                                                              |               |
@@ -131,27 +131,56 @@ create table extraction_log (
   confidence text,
   logged_at timestamptz not null default now()
 );
+
+create table extracted_values (
+  id bigserial primary key,
+  domain text not null,
+  asset_id text not null,
+  field text not null,
+  value text not null,
+  source_file text not null,
+  confidence text not null,
+  extracted_at date not null default current_date
+);
 ```
 
-then set `SUPABASE_URL` and `SUPABASE_KEY` (the project's service-role key)
-as environment variables and run:
+Then create a **Storage bucket** (Storage → New bucket in the Supabase
+dashboard) to hold filed documents — this is where uploads actually live,
+since a hosted app has no durable local disk to file them into (see
+[`archive.py`](src/compliance_tracker/archive.py)'s module docstring). Name
+it whatever you like and set that name as `SUPABASE_STORAGE_BUCKET` (defaults
+to `documents` if unset).
+
+Copy [`.env.example`](.env.example) to `.env` and fill in `SUPABASE_URL` and
+`SUPABASE_KEY` (the project's service-role key), then run:
 
 ```bash
 streamlit run app.py
 ```
 
 This is the intended day-to-day interface: a domain selector, a "Sync from
-registry" button that pulls the CSV (plus any `extracted_values.csv`
-overlay) into the database, a Status filter (All / Flagged / Compliant) in
+registry" button that pulls the CSV (plus any values the upload pipeline has
+extracted) into the database, a Status filter (All / Flagged / Compliant)
+plus dynamic per-column filters inferred from whatever fields the config
+displays (a dropdown for a low-cardinality column, a range slider for a
+numeric or date column, free-text search otherwise — see
+[`filters.py`](src/compliance_tracker/filters.py), no extra config needed) in
 the sidebar for triaging a large portfolio, the tracker itself as a live
 editable table (each rule column shown as ✓/✗ against its value — Streamlit
 can't combine per-cell background color with inline editing, so the
 checklist signal lives in the text — notes save straight back to Supabase,
-no export/re-import step), a document upload box (PDF **or** Excel — real
-incoming paperwork arrives as both, so `extraction.py` reads either) that
-runs the same classify/extract pipeline as `intake` in-page, a "Draft
-reminders" button, and an "Export to Excel" button for when a bank/tender-
-ready file is still needed.
+no export/re-import step), a document upload box (PDF, Excel, **or a
+photo/scan** — images go straight to Claude's vision input, no separate OCR
+step) that runs the same classify/extract pipeline as `intake` (via the
+shared `process_upload()` in [`intake.py`](src/compliance_tracker/intake.py)),
+a "Draft reminders" button, and an "Export to Excel" button for when a
+bank/tender-ready file is still needed.
+
+Filed documents and every value the upload pipeline extracts live in
+Supabase (a Storage bucket and the `extracted_values` table respectively) —
+nothing about a Supabase-backed run depends on local disk surviving between
+requests, so this path is ready to deploy to hosting with no persistent
+filesystem whenever you decide where that will be.
 
 Only the `record` column is ever touched by a sync — `notes` is exclusively
 yours, same non-destructive-merge principle as the Excel/Sheets notes
@@ -207,11 +236,18 @@ computed column refreshes to the latest validation. This is proven by test
 ## Document archive: checking what's actually been filed, not just what's typed in
 
 Compliance data doesn't arrive pre-typed into a spreadsheet — it arrives as
-PDFs. `document_on_file` rules check a real archive folder
+PDFs. `document_on_file` rules check a real archive for the expected file per
+asset, so "insurance certificate not filed" is a real check against what's
+actually on file, not a proxy field. The CLI checks a local archive folder
 (`data/energy_assets_documents/`, genuinely valid synthetic PDFs generated by
-[`scripts/generate_sample_documents.py`](scripts/generate_sample_documents.py))
-for the expected file per asset, so "insurance certificate not filed" is a
-real filesystem check, not a proxy field.
+[`scripts/generate_sample_documents.py`](scripts/generate_sample_documents.py));
+the web app checks a Supabase Storage bucket instead, since a hosted app has
+no durable local disk. Both go through the same
+[`DocumentArchive`](src/compliance_tracker/archive.py) interface — rule
+evaluation never touches a filesystem or the `supabase` package directly, and
+lists each rule's archive directory exactly once per validation run (not once
+per asset), so checking a large portfolio never costs one network round-trip
+per asset per rule.
 
 ## Automated intake: from a raw inbox to structured values
 
@@ -227,24 +263,34 @@ python -m compliance_tracker intake --config config/energy_assets.yaml \
 ```
 
 Drop raw files into an inbox folder — arbitrary filenames, exactly as a
-client would actually send them, **PDF or Excel** (`data/energy_assets_inbox/`
-ships both: `IMG_20260810_permit_scan.pdf`, `Windridge_GridCert_Renewal.pdf`,
-and `AST-011_insurance_schedule.xlsx`). For each file, Claude reads its text
-([`extraction.py`](src/compliance_tracker/extraction.py) dispatches by file
-extension — `pypdf` for PDFs, `openpyxl` flattening every sheet's cells for
-Excel — both fully deterministic, no AI involved in the text extraction
-itself) and returns which known asset it belongs to, which document type it
-is, and the values for whatever fields that document type declares as
-extractable in config — e.g. `insurance_doc_on_file` declares
-`insurance_expiry: date`. A confident match gets auto-filed into the
-document archive under the naming convention the existing `document_on_file`
-rules already check, and its extracted values are appended to
-`output/<domain>/extracted_values.csv` — a separate, clearly-labeled overlay
-layer, never a silent edit to the base CSV registry, so it's always visible
-which values a human entered and which an LLM read off a document. An
-unconfident match (or a file with an extension it doesn't recognize, e.g.
-`.docx`) is left exactly where it is and logged to `extraction_log.csv` for
-a human to resolve — intake never guesses.
+client would actually send them, **PDF, Excel, or a photo/scan**
+(`data/energy_assets_inbox/` ships PDF and Excel examples:
+`IMG_20260810_permit_scan.pdf`, `Windridge_GridCert_Renewal.pdf`, and
+`AST-011_insurance_schedule.xlsx`). For each file,
+[`extraction.py`](src/compliance_tracker/extraction.py) dispatches by file
+extension: PDFs and Excel files go through fully deterministic text
+extraction first (`pypdf` / `openpyxl`, no AI involved in this step); a jpg
+or png photo skips text extraction entirely and goes straight to Claude as a
+vision input — there's no separate OCR library, since the same model already
+classifying the document can just read the image. Either way, Claude returns
+which known asset the document belongs to, which document type it is, and
+the values for whatever fields that document type declares as extractable in
+config — e.g. `insurance_doc_on_file` declares `insurance_expiry: date`. A
+confident match gets auto-filed into the document archive under the naming
+convention the existing `document_on_file` rules already check, and its
+extracted values are appended to a separate, clearly-labeled overlay layer
+(`output/<domain>/extracted_values.csv` for the CLI, an `extracted_values`
+Supabase table for the web app) — never a silent edit to the base CSV
+registry, so it's always visible which values a human entered and which an
+LLM read off a document. An unconfident match (or a file with an extension
+it doesn't recognize, e.g. `.docx`) is left for a human to resolve — the CLI
+leaves it in the inbox folder, the web app files it under a `_pending_review`
+prefix in the Storage bucket — and logged either way. Intake never guesses.
+
+The CLI's `run_intake()` and the web app's upload widget both call the same
+per-file step, [`intake.process_upload()`](src/compliance_tracker/intake.py)
+— parameterized by whichever `DocumentArchive` and extracted-values sink the
+caller passes in, so this logic isn't duplicated between the two.
 
 **The LLM's job stops at extraction.** `run`/`sync` merge the overlay on top
 of the base registry ([`extracted_values.py`](src/compliance_tracker/extracted_values.py))
@@ -407,54 +453,78 @@ exactly that bug showed up in a real generated email during development.
 pytest -v
 ```
 
-93 tests covering: each of the seven rule types at their boundaries, the CSV
-loader's error handling, end-to-end validation counts, config-driven Tracker
-column mapping, notes-preservation across regeneration (the local Excel
-path, the Google Sheets path, and the Supabase path — the latter two each
-via a fake in-memory client, no `gspread`/`supabase` install required),
-PDF and Excel text extraction, deadline-line correctness in reminder emails
-(including the regression test above), reminder-log accumulation,
-draft-only-by-default email behavior with SMTP
-mocked for the opt-in send path, document classification/extraction and the
-intake pipeline (against fake LLM clients — no network calls or
-`anthropic` install required), the extracted-values overlay, and the
-domain-swap proof above. GitHub Actions
+124 tests covering: each of the seven rule types at their boundaries
+(`document_on_file` against an injected `DocumentArchive`, not a real
+filesystem), the CSV loader's error handling, end-to-end validation counts,
+config-driven Tracker column mapping, notes-preservation across
+regeneration (the local Excel path, the Google Sheets path, and the
+Supabase path — the latter two each via a fake in-memory client, no
+`gspread`/`supabase` install required), PDF, Excel, and image dispatch in
+`extraction.py`, deadline-line correctness in reminder emails (including the
+regression test above), reminder-log accumulation, the shared
+scheduler-agnostic reminder cycle (`reminders.py`), draft-only-by-default
+email behavior with SMTP mocked for the opt-in send path, document
+classification/extraction and the intake pipeline (against fake LLM
+clients — no network calls or `anthropic` install required), the
+extracted-values overlay (both the CSV and Supabase-table-backed paths), the
+dynamic table filters (`filters.py`, pure pandas, no `streamlit` install
+required), and the domain-swap proof above. GitHub Actions
 ([.github/workflows/tests.yml](.github/workflows/tests.yml)) runs the suite
 on every push and PR against Python 3.11 and 3.13.
+
+## Automated reminders on a schedule
+
+`app.py`'s "Draft reminders" button only runs when someone clicks it. To
+send reminders unattended, [`scripts/send_reminders.py`](scripts/send_reminders.py)
+wraps the exact same logic
+([`reminders.run_reminder_cycle()`](src/compliance_tracker/reminders.py)) in
+a plain, dependency-free command:
+
+```bash
+python scripts/send_reminders.py --config config/energy_assets.yaml --send
+```
+
+This is deliberately not tied to any particular scheduler — which one you
+use depends on where you end up hosting the app, and that's not decided yet.
+Once it is, point whichever scheduler you pick (cron, a GitHub Actions
+workflow on a schedule, Windows Task Scheduler, a long-running process) at
+this command with `SUPABASE_URL`/`SUPABASE_KEY`/`EMAIL_SEND_MODE`/`SMTP_*`
+set — no further code changes needed.
 
 ## Roadmap (not built)
 
 One thing is deliberately out of scope today, explicitly *future* rather
 than partially built:
 
-- **Deploying the web app to a public URL.** `app.py` runs locally today
-  (`streamlit run app.py`); the data already lives in Supabase rather than
-  a local file specifically so this doesn't require a second migration —
-  deploying the app itself (e.g. Streamlit Community Cloud) is a separate,
-  later step, not needed for local day-to-day use.
-- **Scheduled, unattended sending.** `sync --send` is a manual trigger today.
-  Running it on a schedule (cron / Task Scheduler) needs no code changes —
-  it's the same command — but hasn't been wired up or documented as a
-  first-class setup step yet.
+- **Deploying the web app to a public URL, and picking a scheduler for the
+  command above.** `app.py` runs locally today (`streamlit run app.py`); the
+  data and filed documents already live in Supabase rather than local disk
+  specifically so this doesn't require a second migration once a hosting
+  target (e.g. Streamlit Community Cloud) and a scheduler are chosen.
 
 ## Project structure
 
 ```
 app.py                           # Streamlit web app -- the primary interface
+.env.example                     # every env var the app/CLI reads, documented
 config/                          # one YAML per domain
 data/                            # synthetic sample CSVs, document archives, inbox samples
 scripts/generate_sample_documents.py  # (re)generates the synthetic PDF archive + inbox samples
+scripts/send_reminders.py        # scheduler-agnostic entrypoint for unattended reminder sending
 src/compliance_tracker/
   loaders.py                     # AssetLoader ABC + CSVLoader
   rules.py                       # the 7 generic rule-type checks
   validator.py                   # orchestrates load + rule evaluation
+  archive.py                     # DocumentArchive: local-disk (CLI) or Supabase Storage (web app)
   excel_report.py                # config-driven Tracker/Audit Log Excel generation
   sheets_sync.py                 # syncs the same Tracker to a live Google Sheet
   database.py                    # syncs the same Tracker to Supabase, backs the web app
   reminder_log.py                # persistent reminder history (CSV-backed CLI path)
+  reminders.py                   # shared reminder-evaluate-draft-send cycle (app button + script)
   extraction.py                  # LLM classify/extract from a single document (injectable client)
   extracted_values.py            # persistent overlay of extracted values on the base registry
-  intake.py                      # orchestrates inbox -> archive + extracted_values.csv (CLI path)
+  intake.py                      # orchestrates inbox/upload -> archive + extracted values
+  filters.py                     # config-free dynamic table filters for the web app
   email_drafter.py               # draft-to-file, opt-in SMTP send
   config_schema.py               # config loading + validation
   cli.py                         # `run` (local Excel) / `sync` (Google Sheet) / `intake` (LLM extraction)

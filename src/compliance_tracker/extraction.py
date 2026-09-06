@@ -7,6 +7,11 @@ document says. Extracted values are shape-checked before being trusted (see
 `_validate_field_shape`); a value that doesn't parse as its declared type is
 dropped rather than silently written.
 
+PDF and Excel documents go through deterministic text extraction first; jpg
+and png images are sent straight to Claude as a vision content block instead
+-- there is no separate OCR library or step, since the same model already
+used for classification can read an image directly.
+
 Requires the `llm` extra (`pip install -e ".[llm]"`) for the real client;
 `classify_and_extract` itself only depends on an injected client object; the
 real `anthropic` import happens lazily so tests never need it installed.
@@ -14,14 +19,18 @@ real `anthropic` import happens lazily so tests never need it installed.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field as dataclass_field
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from compliance_tracker.config_schema import AppConfig, RuleConfig
 
 DEFAULT_MODEL = "claude-opus-5"
+
+IMAGE_MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
 
 
 @dataclass
@@ -54,31 +63,53 @@ def build_document_type_candidates(config: AppConfig) -> list[DocumentTypeCandid
     return candidates
 
 
-def extract_text(path: str | Path) -> str:
-    """Deterministic text extraction -- no AI involved. Dispatches by file
-    extension so the same classify_and_extract pipeline can read either a
-    PDF or an Excel technical schedule, since real incoming documents arrive
-    as both."""
-    path = Path(path)
-    suffix = path.suffix.lower()
+@dataclass
+class DocumentContent:
+    """What the model actually sees for one document. Exactly one of
+    text/image_bytes is set: PDF/Excel go through deterministic text
+    extraction below (unchanged); jpg/png pass their raw bytes straight
+    through to Claude as a vision content block instead."""
+
+    text: str | None = None
+    image_bytes: bytes | None = None
+    media_type: str | None = None  # "image/jpeg" | "image/png", set iff image_bytes is set
+
+
+def extract_content(source: str | Path | tuple[str, bytes]) -> DocumentContent:
+    """The one dispatch point intake.py and app.py both call, for either a
+    filesystem path (the CLI's inbox) or an in-memory (filename, bytes) pair
+    (a Streamlit upload). Dispatches by file extension."""
+    if isinstance(source, tuple):
+        filename, raw_bytes = source
+        suffix = Path(filename).suffix.lower()
+        readable: Any = BytesIO(raw_bytes)
+    else:
+        path = Path(source)
+        suffix = path.suffix.lower()
+        readable = path
+        raw_bytes = None
+
+    if suffix in IMAGE_MEDIA_TYPES:
+        image_bytes = raw_bytes if raw_bytes is not None else Path(source).read_bytes()
+        return DocumentContent(image_bytes=image_bytes, media_type=IMAGE_MEDIA_TYPES[suffix])
     if suffix == ".pdf":
-        return _extract_text_from_pdf(path)
+        return DocumentContent(text=_extract_text_from_pdf(readable))
     if suffix in (".xlsx", ".xls"):
-        return _extract_text_from_excel(path)
+        return DocumentContent(text=_extract_text_from_excel(readable))
     raise ValueError(f"Unsupported document type: {suffix or '(no extension)'}")
 
 
-def _extract_text_from_pdf(path: Path) -> str:
+def _extract_text_from_pdf(source: Any) -> str:
     from pypdf import PdfReader
 
-    reader = PdfReader(str(path))
+    reader = PdfReader(source)
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
-def _extract_text_from_excel(path: Path) -> str:
+def _extract_text_from_excel(source: Any) -> str:
     from openpyxl import load_workbook
 
-    workbook = load_workbook(str(path), data_only=True)
+    workbook = load_workbook(source, data_only=True)
     lines = []
     for sheet in workbook.worksheets:
         lines.append(f"[Sheet: {sheet.title}]")
@@ -121,7 +152,7 @@ def _validate_field_shape(field_name: str, value: str, candidates: list[Document
 
 
 class LLMClient(Protocol):
-    def parse_extraction(self, system: str, text: str) -> "_RawExtraction": ...
+    def parse_extraction(self, system: str, content: DocumentContent) -> "_RawExtraction": ...
 
 
 @dataclass
@@ -156,7 +187,7 @@ def _build_system_prompt(known_asset_ids: list[str], candidates: list[DocumentTy
 
 
 def classify_and_extract(
-    text: str,
+    content: DocumentContent,
     known_asset_ids: list[str],
     candidates: list[DocumentTypeCandidate],
     client: LLMClient | None = None,
@@ -166,7 +197,7 @@ def classify_and_extract(
         client = _AnthropicClient(model=model)
 
     system = _build_system_prompt(known_asset_ids, candidates)
-    raw = client.parse_extraction(system, text)
+    raw = client.parse_extraction(system, content)
 
     valid_fields = {}
     for f in raw.fields:
@@ -211,13 +242,25 @@ class _AnthropicClient:
         self._client = anthropic.Anthropic()
         self._model = model
 
-    def parse_extraction(self, system: str, text: str) -> _RawExtraction:
+    def parse_extraction(self, system: str, content: DocumentContent) -> _RawExtraction:
+        if content.image_bytes is not None:
+            user_content: Any = [{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": content.media_type,
+                    "data": base64.standard_b64encode(content.image_bytes).decode("ascii"),
+                },
+            }]
+        else:
+            user_content = (content.text or "")[:20000]
+
         response = self._client.messages.parse(
             model=self._model,
             max_tokens=1024,
             output_config={"effort": "low"},
             system=system,
-            messages=[{"role": "user", "content": text[:20000]}],
+            messages=[{"role": "user", "content": user_content}],
             output_format=self._schema,
         )
         parsed = response.parsed_output
