@@ -21,6 +21,7 @@ unit-tested; this page is verified by running it, not by an automated test.
 
 from __future__ import annotations
 
+import io
 import os
 from datetime import date
 from pathlib import Path
@@ -33,15 +34,16 @@ from compliance_tracker.archive import build_supabase_storage_archive
 from compliance_tracker.config_schema import load_config
 from compliance_tracker.database import (
     build_supabase_client,
+    load_needs_review,
     load_reminder_summary,
     load_results_and_notes,
     record_extraction_outcome,
     save_note,
     sync_registry,
 )
-from compliance_tracker.excel_report import build_tracker_table, generate_excel_report
+from compliance_tracker.excel_report import build_tracker_table, next_deadline
 from compliance_tracker.extraction import build_document_type_candidates
-from compliance_tracker.filters import apply_filters, infer_filter_specs
+from compliance_tracker.filters import apply_filters, apply_search, infer_filter_specs
 from compliance_tracker.intake import process_upload
 from compliance_tracker.reminders import run_reminder_cycle
 
@@ -86,6 +88,29 @@ def decorate_rule_columns(config, ordered, rows) -> list[list]:
             col_idx = n_info + j
             mark = "✗ " if rule.id in violated_ids else "✓ "
             decorated[i][col_idx] = f"{mark}{decorated[i][col_idx]}"
+    return decorated
+
+
+def decorate_deadline_urgency(config, ordered, rows) -> list[list]:
+    """Prefix the Next Deadline cell with an urgency marker -- same
+    text-only approach as decorate_rule_columns, for the same reason
+    (st.data_editor can't combine per-cell color with inline editing)."""
+    deadline_idx = len(config.excel.info_columns) + len(config.rules)
+    decorated = [list(row) for row in rows]
+    today = date.today()
+    for i, result in enumerate(ordered):
+        raw = decorated[i][deadline_idx]
+        if not raw:
+            continue
+        try:
+            deadline = date.fromisoformat(raw)
+        except ValueError:
+            continue
+        days_left = (deadline - today).days
+        if days_left < 0:
+            decorated[i][deadline_idx] = f"⚠ OVERDUE — {raw}"
+        elif days_left <= 14:
+            decorated[i][deadline_idx] = f"🔶 {days_left}d — {raw}"
     return decorated
 
 
@@ -149,6 +174,8 @@ def main():
         st.sidebar.success(f"Synced {n} asset(s) from the registry.")
         st.rerun()
 
+    search_query = st.sidebar.text_input("Search", placeholder="Asset id, name, location, notes...")
+
     results, notes_by_asset = load_results_and_notes(client, config, archive=archive)
     if not results:
         st.info("No assets loaded yet -- click 'Sync from registry' in the sidebar.")
@@ -163,8 +190,29 @@ def main():
     col3.metric("Compliant", len(results) - len(flagged))
 
     headers, ordered, rows = build_tracker_table(config, results, reminder_summary, notes_by_asset)
+
+    rule_labels = [r.label for r in config.rules]
+    selected_rule_labels = st.sidebar.multiselect("Violated rule", rule_labels)
+    if selected_rule_labels:
+        selected_rule_ids = {r.id for r in config.rules if r.label in selected_rule_labels}
+        keep = [bool({v.rule_id for v in result.violations} & selected_rule_ids) for result in ordered]
+        ordered = [r for r, k in zip(ordered, keep) if k]
+        rows = [row for row, k in zip(rows, keep) if k]
+
+    sort_choice = st.sidebar.radio("Sort by", ["Flagged first", "Nearest deadline"], horizontal=True)
+    if sort_choice == "Nearest deadline":
+        def _deadline_key(result):
+            deadline = next_deadline(config, result)
+            return (deadline == "", deadline)
+        paired = sorted(zip(ordered, rows), key=lambda pair: _deadline_key(pair[0]))
+        ordered = [pair[0] for pair in paired]
+        rows = [pair[1] for pair in paired]
+
     decorated_rows = decorate_rule_columns(config, ordered, rows)
+    decorated_rows = decorate_deadline_urgency(config, ordered, decorated_rows)
     df = pd.DataFrame(decorated_rows, columns=headers)
+
+    df = apply_search(df, search_query)
 
     status_label = "Status"
     show = st.sidebar.radio("Show", ["All", "Flagged", "Compliant"], horizontal=True)
@@ -228,9 +276,34 @@ def main():
 
     st.divider()
     st.subheader("Export")
-    if st.button("Export to Excel"):
-        path = generate_excel_report(config, results, reminder_summary, base_output_dir / "tracker.xlsx")
-        st.success(f"Exported to {path}")
+    st.caption(f"Downloads exactly what's currently shown above -- {len(df)} of {len(results)} asset(s).")
+    export_col1, export_col2 = st.columns(2)
+    export_col1.download_button(
+        "Download filtered view (CSV)",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{config.registry_key}_tracker.csv",
+        mime="text/csv",
+    )
+    excel_buffer = io.BytesIO()
+    df.to_excel(excel_buffer, index=False)
+    export_col2.download_button(
+        "Download filtered view (Excel)",
+        data=excel_buffer.getvalue(),
+        file_name=f"{config.registry_key}_tracker.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    st.divider()
+    pending = load_needs_review(client, config.registry_key)
+    st.subheader(f"Needs Review ({len(pending)})")
+    if pending:
+        st.dataframe(
+            pd.DataFrame(pending)[["source_filename", "asset_id", "document_type", "confidence", "logged_at"]],
+            hide_index=True, use_container_width=True,
+        )
+        st.caption("Filed under the archive's _pending_review prefix -- couldn't be confidently classified.")
+    else:
+        st.caption("Nothing waiting on manual review.")
 
     st.divider()
     st.subheader("Upload a document")

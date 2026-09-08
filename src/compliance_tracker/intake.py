@@ -1,7 +1,8 @@
 """Orchestrates the inbox -> archive + extracted-values pipeline.
 
-For every incoming file: extract its content, ask the LLM to classify and
-extract (extraction.classify_and_extract), and either file it into the
+For every incoming file: extract its content, then classify and extract
+(extraction.extract_document -- a cheap deterministic check first, the LLM
+only if the document is genuinely ambiguous), and either file it into the
 document archive + log the extracted values, or -- if the match isn't
 confident -- leave it for human review. Never silently guesses.
 
@@ -25,8 +26,8 @@ from compliance_tracker.extraction import (
     DocumentTypeCandidate,
     LLMClient,
     build_document_type_candidates,
-    classify_and_extract,
     extract_content,
+    extract_document,
 )
 from compliance_tracker.loaders import build_loader
 
@@ -78,7 +79,7 @@ def process_upload(
     caller's original copy of the file -- that's the caller's job, since
     only the CLI has an inbox file to clean up afterward."""
     content_obj = extract_content((filename, content))
-    result = classify_and_extract(content_obj, known_asset_ids, candidates, client=client)
+    result = extract_document(filename, content_obj, known_asset_ids, candidates, client=client)
 
     if result.confidence in CONFIDENT_LEVELS and result.asset_id and result.document_type_rule_id:
         candidate = next(c for c in candidates if c.rule_id == result.document_type_rule_id)

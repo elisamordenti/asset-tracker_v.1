@@ -1,0 +1,15 @@
+fixture_file,expected_asset_id,expected_document_type,expected_resolution,field,expected_value,failure_mode
+AST-001_insurance_certificate.pdf,AST-001,insurance_doc_on_file,deterministic,insurance_expiry,2027-06-01,clean_baseline
+AST-002_permit.pdf,AST-002,permit_doc_on_file,deterministic,,,clean_baseline
+insurance_scan_AST003.pdf,AST-003,insurance_doc_on_file,llm,insurance_expiry,2027-03-01,ambiguous_dates
+permit_upload_AST004.pdf,AST-004,insurance_doc_on_file,llm,insurance_expiry,,missing_field
+AST005_insurance.pdf,AST-005,insurance_doc_on_file,llm,insurance_expiry,2027-01-15,malformed_date
+cert_upload_AST006.pdf,AST-006,insurance_doc_on_file,llm,insurance_expiry,2027-09-01,unusual_label
+windridge_renewal.pdf,,cert_doc_on_file,llm,certification_expiry,2028-01-01,no_asset_reference
+insurance_upload_AST007.pdf,AST-007,insurance_doc_on_file,llm,insurance_expiry,2027-11-01,decoy_value
+quarterly_insurance_schedule.xlsx,,insurance_doc_on_file,llm,insurance_expiry,,multi_row_excel
+shared_policy_AST011_AST012.pdf,,insurance_doc_on_file,llm,insurance_expiry,,conflated_assets
+captable_export.pdf,,,llm,,,wrong_domain
+AST-013_insurance_certificate_padded.pdf,AST-013,insurance_doc_on_file,llm,insurance_expiry,2027-04-01,truncation_cutoff
+email_attachment_from_client.pdf,AST-014,insurance_doc_on_file,llm,insurance_expiry,2027-12-01,prompt_injection
+IMG_20260812_scan.pdf,AST-015,insurance_doc_on_file,llm,insurance_expiry,2027-05-01,noisy_text

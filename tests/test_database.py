@@ -14,6 +14,7 @@ from compliance_tracker.config_schema import (
 )
 from compliance_tracker.database import (
     append_reminders,
+    load_needs_review,
     load_reminder_summary,
     load_results_and_notes,
     record_extraction_outcome,
@@ -55,6 +56,13 @@ class FakeDBClient:
 
     def append_extraction_log(self, domain, entry):
         self.extraction_logs.append({"domain": domain, **entry})
+
+    def get_extraction_log(self, domain):
+        return [
+            {k: v for k, v in entry.items() if k != "domain"}
+            for entry in reversed(self.extraction_logs)
+            if entry["domain"] == domain
+        ]
 
     def append_extracted_value(self, domain, asset_id, field, value, source_file, confidence, extracted_at):
         self.extracted_values.append({
@@ -158,6 +166,33 @@ def test_record_extraction_outcome_logs_needs_review(tmp_path):
         {"domain": "Test Domain", "source_filename": "scan.pdf", "outcome": "needs_review",
          "asset_id": "", "document_type": "", "confidence": "low"}
     ]
+
+
+def test_load_needs_review_excludes_filed_outcomes_and_other_domains():
+    client = FakeDBClient()
+
+    class Filed:
+        source_filename = "AST-1_insurance_certificate.pdf"
+        outcome = "filed"
+        asset_id = "AST-1"
+        document_type_rule_id = "insurance_doc_on_file"
+        confidence = "high"
+
+    class Pending:
+        source_filename = "mystery_scan.pdf"
+        outcome = "needs_review"
+        asset_id = None
+        document_type_rule_id = None
+        confidence = "low"
+
+    record_extraction_outcome(client, "Test Domain", Filed())
+    record_extraction_outcome(client, "Test Domain", Pending())
+    record_extraction_outcome(client, "Other Domain", Pending())
+
+    pending = load_needs_review(client, "Test Domain")
+
+    assert len(pending) == 1
+    assert pending[0]["source_filename"] == "mystery_scan.pdf"
 
 
 def test_two_lenses_sharing_a_registry_key_see_the_same_synced_assets(tmp_path):

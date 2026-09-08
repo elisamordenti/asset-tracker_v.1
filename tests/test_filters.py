@@ -3,7 +3,7 @@ are exactly what app.py's Streamlit widgets are built and applied from."""
 
 import pandas as pd
 
-from compliance_tracker.filters import FilterSpec, apply_filters, infer_filter_specs
+from compliance_tracker.filters import FilterSpec, apply_filters, apply_search, infer_filter_specs
 
 
 def test_infer_filter_specs_low_cardinality_column_is_categorical():
@@ -81,3 +81,33 @@ def test_apply_filters_empty_selection_leaves_column_unfiltered():
     filtered = apply_filters(df, specs, {"Status": []})
 
     assert filtered["ID"].tolist() == ["AST-1", "AST-2"]
+
+
+def test_apply_search_matches_across_any_column_case_insensitively():
+    df = pd.DataFrame({
+        "Asset ID": ["AST-1", "AST-2"],
+        "Location": ["Aberdeen, UK", "Riverside, CA, USA"],
+    })
+
+    filtered = apply_search(df, "aberdeen")
+
+    assert filtered["Asset ID"].tolist() == ["AST-1"]
+
+
+def test_apply_search_matches_on_any_column_not_just_the_first():
+    df = pd.DataFrame({
+        "Asset ID": ["AST-1", "AST-2"],
+        "Notes / Follow-up": ["", "waiting on renewal"],
+    })
+
+    filtered = apply_search(df, "renewal")
+
+    assert filtered["Asset ID"].tolist() == ["AST-2"]
+
+
+def test_apply_search_empty_query_returns_dataframe_unchanged():
+    df = pd.DataFrame({"Asset ID": ["AST-1", "AST-2"]})
+
+    filtered = apply_search(df, "")
+
+    assert filtered["Asset ID"].tolist() == ["AST-1", "AST-2"]

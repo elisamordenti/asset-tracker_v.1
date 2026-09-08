@@ -16,6 +16,8 @@ from compliance_tracker.extraction import (
     build_document_type_candidates,
     classify_and_extract,
     extract_content,
+    extract_document,
+    try_deterministic_match,
 )
 
 
@@ -161,6 +163,198 @@ def test_classify_and_extract_passes_image_content_through_unchanged():
 
     assert fake.last_content is image_content
     assert fake.last_content.image_bytes == b"\x89PNG..."
+
+
+def test_classify_and_extract_carries_citation_alongside_value():
+    config = build_config_with_document_rules()
+    candidates = build_document_type_candidates(config)
+    fake = FakeLLMClient(_RawExtraction(
+        asset_id="AST-1",
+        document_type="insurance_doc_on_file",
+        confidence="high",
+        fields=[{"field": "insurance_expiry", "value": "2027-01-15", "citation": "Policy Expiry: 2027-01-15"}],
+    ))
+
+    result = classify_and_extract(DocumentContent(text="text"), ["AST-1"], candidates, client=fake)
+
+    assert result.citations == {"insurance_expiry": "Policy Expiry: 2027-01-15"}
+    assert result.method == "llm"
+
+
+def test_classify_and_extract_drops_citation_alongside_malformed_value():
+    config = build_config_with_document_rules()
+    candidates = build_document_type_candidates(config)
+    fake = FakeLLMClient(_RawExtraction(
+        asset_id="AST-1",
+        document_type="insurance_doc_on_file",
+        confidence="high",
+        fields=[{"field": "insurance_expiry", "value": "not-a-date", "citation": "some text"}],
+    ))
+
+    result = classify_and_extract(DocumentContent(text="text"), ["AST-1"], candidates, client=fake)
+
+    assert result.fields == {}
+    assert result.citations == {}
+
+
+class RaisingLLMClient:
+    """Proves the deterministic path genuinely never reaches the LLM --
+    fails loudly (rather than silently passing) if it's ever called."""
+
+    def parse_extraction(self, system, content):
+        raise AssertionError("LLM should never be called for an unambiguous document")
+
+
+def build_config_with_single_date_field_rule():
+    rules = [
+        RuleConfig(
+            id="insurance_doc_on_file", type="document_on_file", severity="critical",
+            label="Insurance Cert on File", message="missing",
+            params={
+                "directory": "some/dir",
+                "filename_pattern": "{asset_id}_insurance_certificate.pdf",
+                "extractable_fields": [{"field": "insurance_expiry", "type": "date"}],
+            },
+        ),
+        RuleConfig(
+            id="permit_doc_on_file", type="document_on_file", severity="critical",
+            label="Permit on File", message="missing",
+            params={"directory": "some/dir", "filename_pattern": "{asset_id}_permit.pdf"},
+        ),
+    ]
+    return AppConfig(
+        domain="Test",
+        source=SourceConfig(type="csv", path="assets.csv", id_field="asset_id"),
+        contact=ContactConfig(name_field="contact_name", email_field="contact_email"),
+        rules=rules,
+        excel=ExcelConfig(info_columns=[ColumnConfig(field="asset_id", label="ID")]),
+        email=EmailConfig(subject_template="s", body_template="b"),
+    )
+
+
+def test_try_deterministic_match_resolves_correctly_named_file_with_one_date_field():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+    text = "Insurance Certificate\nAsset / Entity: AST-1\nPolicy Expiry: 2027-01-15"
+
+    result = try_deterministic_match(
+        "AST-1_insurance_certificate.pdf", DocumentContent(text=text), ["AST-1", "AST-2"], candidates,
+    )
+
+    assert result is not None
+    assert result.asset_id == "AST-1"
+    assert result.document_type_rule_id == "insurance_doc_on_file"
+    assert result.fields == {"insurance_expiry": "2027-01-15"}
+    assert result.method == "deterministic"
+    assert result.confidence == "high"
+
+
+def test_try_deterministic_match_resolves_presence_only_document_type():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+    text = "Operating Permit\nAsset / Entity: AST-1"
+
+    result = try_deterministic_match("AST-1_permit.pdf", DocumentContent(text=text), ["AST-1"], candidates)
+
+    assert result is not None
+    assert result.document_type_rule_id == "permit_doc_on_file"
+    assert result.fields == {}
+
+
+def test_try_deterministic_match_falls_through_when_filename_does_not_follow_convention():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+    text = "Insurance Certificate\nAsset / Entity: AST-1\nPolicy Expiry: 2027-01-15"
+
+    result = try_deterministic_match(
+        "scan_insurance_AST1.pdf", DocumentContent(text=text), ["AST-1"], candidates,
+    )
+
+    assert result is None
+
+
+def test_try_deterministic_match_falls_through_when_filename_and_content_disagree():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+    # Filename claims AST-1, but the asset id never actually appears in the text.
+    text = "Insurance Certificate\nPolicy Expiry: 2027-01-15"
+
+    result = try_deterministic_match(
+        "AST-1_insurance_certificate.pdf", DocumentContent(text=text), ["AST-1"], candidates,
+    )
+
+    assert result is None
+
+
+def test_try_deterministic_match_falls_through_on_two_dates():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+    text = "Insurance Certificate\nAsset / Entity: AST-1\nIssued: 2025-01-01\nPolicy Expiry: 2027-01-15"
+
+    result = try_deterministic_match(
+        "AST-1_insurance_certificate.pdf", DocumentContent(text=text), ["AST-1"], candidates,
+    )
+
+    assert result is None
+
+
+def test_try_deterministic_match_falls_through_on_zero_dates():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+    text = "Insurance Certificate\nAsset / Entity: AST-1"
+
+    result = try_deterministic_match(
+        "AST-1_insurance_certificate.pdf", DocumentContent(text=text), ["AST-1"], candidates,
+    )
+
+    assert result is None
+
+
+def test_try_deterministic_match_returns_none_for_image_content():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+
+    result = try_deterministic_match(
+        "AST-1_permit.pdf",
+        DocumentContent(image_bytes=b"\x89PNG...", media_type="image/png"),
+        ["AST-1"],
+        candidates,
+    )
+
+    assert result is None
+
+
+def test_extract_document_skips_llm_entirely_for_correctly_named_file():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+    text = "Insurance Certificate\nAsset / Entity: AST-1\nPolicy Expiry: 2027-01-15"
+
+    result = extract_document(
+        "AST-1_insurance_certificate.pdf", DocumentContent(text=text), ["AST-1"], candidates,
+        client=RaisingLLMClient(),
+    )
+
+    assert result.method == "deterministic"
+    assert result.fields == {"insurance_expiry": "2027-01-15"}
+
+
+def test_extract_document_falls_through_to_llm_for_ambiguous_document():
+    config = build_config_with_single_date_field_rule()
+    candidates = build_document_type_candidates(config)
+    text = "Insurance Certificate\nAsset / Entity: AST-1\nIssued: 2025-01-01\nPolicy Expiry: 2027-01-15"
+    fake = FakeLLMClient(_RawExtraction(
+        asset_id="AST-1",
+        document_type="insurance_doc_on_file",
+        confidence="high",
+        fields=[{"field": "insurance_expiry", "value": "2027-01-15", "citation": "Policy Expiry: 2027-01-15"}],
+    ))
+
+    result = extract_document(
+        "AST-1_insurance_certificate.pdf", DocumentContent(text=text), ["AST-1"], candidates, client=fake,
+    )
+
+    assert result.method == "llm"
+    assert result.fields == {"insurance_expiry": "2027-01-15"}
 
 
 def test_extract_content_reads_excel_workbook(tmp_path):

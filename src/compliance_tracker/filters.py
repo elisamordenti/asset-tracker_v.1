@@ -74,6 +74,18 @@ def infer_filter_specs(df: pd.DataFrame, columns: list[str]) -> list[FilterSpec]
     return specs
 
 
+def apply_search(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    """Row-wise, case-insensitive substring search across every column in
+    `df` -- ORed together, so a query matches a row if it appears anywhere
+    in that row. A falsy query returns `df` unchanged."""
+    if not query:
+        return df
+    mask = pd.Series(False, index=df.index)
+    for column in df.columns:
+        mask = mask | df[column].astype(str).str.contains(query, case=False, na=False, regex=False)
+    return df[mask]
+
+
 def apply_filters(df: pd.DataFrame, specs: list[FilterSpec], values: dict[str, Any]) -> pd.DataFrame:
     """values: {column: selection} -- a list[str] for categorical, a str for
     text, a (min, max) tuple for the range kinds. A falsy/missing selection

@@ -51,6 +51,7 @@ class DBClient(Protocol):
     def append_reminder(self, domain: str, asset_id: str, sent_date: str, reminder_number: int) -> None: ...
     def get_reminders(self, domain: str) -> list[dict[str, Any]]: ...  # [{asset_id, date, reminder_number}]
     def append_extraction_log(self, domain: str, entry: dict[str, str]) -> None: ...
+    def get_extraction_log(self, domain: str) -> list[dict[str, Any]]: ...  # [{source_filename, outcome, asset_id, document_type, confidence, logged_at}]
     def append_extracted_value(
         self, domain: str, asset_id: str, field: str, value: str, source_file: str, confidence: str, extracted_at: str
     ) -> None: ...
@@ -112,6 +113,13 @@ def record_extraction_outcome(client: DBClient, domain: str, outcome) -> None:
     )
 
 
+def load_needs_review(client: DBClient, domain: str) -> list[dict[str, Any]]:
+    """Every logged extraction attempt that didn't result in a confident,
+    auto-filed document -- i.e. still sitting under the archive's
+    `_pending_review` prefix, waiting for a human. Most recent first."""
+    return [entry for entry in client.get_extraction_log(domain) if entry["outcome"] != "filed"]
+
+
 def build_supabase_client(url: str, key: str) -> DBClient:
     """The real DBClient, backed by a Supabase project. Only imports
     `supabase` when actually called."""
@@ -160,6 +168,17 @@ class _SupabaseDBClient:
 
     def append_extraction_log(self, domain: str, entry: dict[str, str]) -> None:
         self._raw.table("extraction_log").insert({"domain": domain, **entry}).execute()
+
+    def get_extraction_log(self, domain: str) -> list[dict[str, Any]]:
+        resp = (
+            self._raw.table("extraction_log")
+            .select("source_filename, outcome, asset_id, document_type, confidence, logged_at")
+            .eq("domain", domain)
+            .order("logged_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        return resp.data
 
     def append_extracted_value(
         self, domain: str, asset_id: str, field: str, value: str, source_file: str, confidence: str, extracted_at: str

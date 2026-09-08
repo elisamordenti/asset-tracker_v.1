@@ -75,6 +75,33 @@ def test_confident_match_is_filed_and_logged(tmp_path):
     assert "filed" in log_rows
 
 
+class RaisingLLMClient:
+    def parse_extraction(self, system, content):
+        raise AssertionError("LLM should never be called for a correctly-named file")
+
+
+def test_correctly_named_file_is_filed_without_ever_calling_the_llm(tmp_path):
+    archive_dir = tmp_path / "archive"
+    inbox_dir = tmp_path / "inbox"
+    inbox_dir.mkdir()
+    incoming = inbox_dir / "AST-1_insurance_certificate.pdf"
+    incoming.write_bytes(b"%PDF-1.4\n%%EOF")
+
+    config = build_config(tmp_path, archive_dir)
+    text = "Insurance Certificate\nAsset / Entity: AST-1\nPolicy Expiry: 2027-01-15"
+
+    with patch("compliance_tracker.intake.extract_content", return_value=DocumentContent(text=text)):
+        summary = run_intake(
+            config, inbox_dir, tmp_path / "extracted_values.csv", tmp_path / "extraction_log.csv",
+            client=RaisingLLMClient(),
+        )
+
+    assert len(summary.filed) == 1
+    assert (archive_dir / "AST-1_insurance_certificate.pdf").exists()
+    latest = load_latest_values(tmp_path / "extracted_values.csv")
+    assert latest["AST-1"]["insurance_expiry"] == "2027-01-15"
+
+
 def test_low_confidence_stays_in_inbox_and_needs_review(tmp_path):
     archive_dir = tmp_path / "archive"
     inbox_dir = tmp_path / "inbox"

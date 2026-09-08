@@ -272,11 +272,28 @@ extension: PDFs and Excel files go through fully deterministic text
 extraction first (`pypdf` / `openpyxl`, no AI involved in this step); a jpg
 or png photo skips text extraction entirely and goes straight to Claude as a
 vision input — there's no separate OCR library, since the same model already
-classifying the document can just read the image. Either way, Claude returns
-which known asset the document belongs to, which document type it is, and
-the values for whatever fields that document type declares as extractable in
-config — e.g. `insurance_doc_on_file` declares `insurance_expiry: date`. A
-confident match gets auto-filed into the document archive under the naming
+classifying the document can just read the image.
+
+Before any of that reaches Claude, `extract_document()` tries a cheap
+deterministic check first (`try_deterministic_match()`): if the filename
+already follows the firm's own `{asset_id}_{doctype}.pdf` convention *and*
+that same asset id actually appears in the document's own text *and* (for
+a document type with a field to extract) there's exactly one unambiguous
+value for it, the document is filed without ever calling the model. Only
+genuinely ambiguous documents — which in practice means most of them, since
+real inboxes are exactly this messy — fall through to Claude. This is a
+cheap version of matching task difficulty to the resource it actually
+needs: a client resending a correctly-named file doesn't need an LLM call
+to be understood.
+
+Either way, whichever path resolves it, the result is which known asset the
+document belongs to, which document type it is, and the values for whatever
+fields that document type declares as extractable in config — e.g.
+`insurance_doc_on_file` declares `insurance_expiry: date`. When Claude is
+the one doing the extracting, it's also required to cite the exact source
+text each value came from — see
+[Evaluating the extraction pipeline](#evaluating-the-extraction-pipeline-where-it-fails-and-how-much-that-costs)
+below for what that buys. A confident match gets auto-filed into the document archive under the naming
 convention the existing `document_on_file` rules already check, and its
 extracted values are appended to a separate, clearly-labeled overlay layer
 (`output/<domain>/extracted_values.csv` for the CLI, an `extracted_values`
@@ -303,6 +320,50 @@ someone wants to regenerate a tracker. `extraction.py`/`intake.py` are fully
 unit-tested against an injectable client — no network calls or
 `anthropic`/`pypdf` install required to run the test suite (only to actually
 call `intake` for real, which needs `ANTHROPIC_API_KEY` set).
+
+## Evaluating the extraction pipeline: where it fails, and how much that costs
+
+Calling an LLM is the easy part. The actual engineering question is: when
+does it fail, how would you know, and what does a given failure cost —
+because a missed expired certificate silently marked "compliant" is
+dangerous, while a fine document needlessly held for human review just
+costs someone 30 seconds. `eval/` exists to measure that, not assert it.
+
+- **`eval/fixtures/`** — 14 documents authored specifically to be hard.
+  Every document in `data/energy_assets_documents/` and `data/*_inbox/` is
+  clean, unambiguous synthetic text; none of them stress extraction itself.
+  These do: two dates on one document with no clear label, a field that's
+  genuinely absent, a non-ISO date format, an expiry under a label the
+  schema doesn't name, a document that references no known asset at all, a
+  decoy date next to the real one, a spreadsheet covering several assets,
+  one document explicitly covering two assets, a document from the wrong
+  domain entirely, content pushed past the model's existing 20,000-character
+  truncation limit (`eval/results.md` explains why that one's in here — it's
+  a real, already-existing limitation, not a hypothetical), a
+  prompt-injection attempt embedded in the document body, and text with
+  irregular spacing simulating a rough scan. `eval/ground_truth.csv` records
+  the correct answer (including "the correct answer is no value" or "the
+  correct answer is declining to pick an asset") for each one.
+- **`eval/run_eval.py`** — runs the real pipeline (`extract_document()`,
+  deterministic router included) against every fixture and buckets each
+  case into `MATCH`, `FALSE_NEGATIVE` (wrong, but confident enough to have
+  been silently trusted — the dangerous one), or `FALSE_POSITIVE` (a real
+  answer existed but got held back anyway — the 30-second one). It also
+  checks, independent of that verdict, whether the model's own citation for
+  each extracted value actually appears in the source document — a citation
+  that doesn't verify is a concrete, mechanical hallucination signal that
+  needs no ground truth at all — and whether the deterministic router ever
+  resolves a genuinely ambiguous fixture on its own (it never should; that
+  would mean skipping the safety net on a hard case).
+- **`eval/results.md`** — the output: a verdict table and an error taxonomy
+  grouped by what each fixture was designed to stress.
+
+This makes no Claude API calls unless `ANTHROPIC_API_KEY` is set — same
+opt-in-only pattern as sending real reminder emails. Today, `eval/results.md`
+ships as a template: the harness and its own test suite
+(`tests/test_run_eval.py`, run against a fake injectable client, same as
+everywhere else in this repo) are built and green, but the real numbers are
+one `python eval/run_eval.py` away, not yet run in this environment.
 
 ## CLI alternatives: local Excel, or a live Google Sheet
 
