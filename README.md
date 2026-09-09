@@ -142,6 +142,17 @@ create table extracted_values (
   confidence text not null,
   extracted_at date not null default current_date
 );
+
+create table email_drafts (
+  domain text not null,
+  asset_id text not null,
+  to_name text,
+  to_email text,
+  subject text not null,
+  body text not null,
+  sent_at timestamptz,
+  primary key (domain, asset_id)
+);
 ```
 
 Then create a **Storage bucket** (Storage → New bucket in the Supabase
@@ -348,15 +359,22 @@ costs someone 30 seconds. `eval/` exists to measure that, not assert it.
   deterministic router included) against every fixture and buckets each
   case into `MATCH`, `FALSE_NEGATIVE` (wrong, but confident enough to have
   been silently trusted — the dangerous one), or `FALSE_POSITIVE` (a real
-  answer existed but got held back anyway — the 30-second one). It also
-  checks, independent of that verdict, whether the model's own citation for
-  each extracted value actually appears in the source document — a citation
-  that doesn't verify is a concrete, mechanical hallucination signal that
-  needs no ground truth at all — and whether the deterministic router ever
-  resolves a genuinely ambiguous fixture on its own (it never should; that
-  would mean skipping the safety net on a hard case).
-- **`eval/results.md`** — the output: a verdict table and an error taxonomy
-  grouped by what each fixture was designed to stress.
+  answer existed but got held back anyway — the 30-second one) — ground
+  truth crossed with cost. It also re-groups that same ground-truth
+  comparison by the model's own self-reported confidence instead of by
+  cost — a confidence-calibration table, not a separate check: does
+  `"high"` actually mean more accurate than `"medium"`? `intake.py`
+  currently auto-files both, which only makes sense if `medium` is about as
+  reliable as `high`; this is the evidence to check that against, not a
+  guess. Separately, and without touching ground truth at all, it checks
+  whether the model's own citation for each extracted value actually
+  appears in the source document — a citation that doesn't verify is a
+  concrete, mechanical hallucination signal — and whether the deterministic
+  router ever resolves a genuinely ambiguous fixture on its own (it never
+  should; that would mean skipping the safety net on a hard case).
+- **`eval/results.md`** — the output: a verdict table, a confidence-
+  calibration table, and an error taxonomy grouped by what each fixture was
+  designed to stress.
 
 This makes no Claude API calls unless `ANTHROPIC_API_KEY` is set — same
 opt-in-only pattern as sending real reminder emails. Today, `eval/results.md`

@@ -24,6 +24,11 @@ Each case is also checked for two things independent of the verdict above:
     deterministically) would be worse than a slow LLM call, since it means
     skipping the safety net on a hard case -- this should never happen and
     is flagged loudly in the report if it does.
+  - confidence calibration: when the model itself says "high" vs "medium"
+    vs "low," does accuracy actually track that? intake.py currently
+    auto-files both "high" and "medium" -- this checks whether "medium" is
+    actually about as trustworthy as "high," which is the assumption that
+    rule rests on but has never been measured until this report exists.
 
 Makes no Claude API calls unless ANTHROPIC_API_KEY is set (same opt-in-only
 pattern as email_drafter.send_drafted_emails) -- importing or dry-running
@@ -75,6 +80,7 @@ class CaseResult:
     confidence: str
     verdict: str
     citation_status: str  # "verified" | "unverified" | "n/a"
+    correct: bool  # ground-truth correctness, independent of the cost-weighted verdict
 
 
 def _load_ground_truth() -> list[dict[str, str]]:
@@ -146,6 +152,7 @@ def evaluate_case(row: dict[str, str], candidates, known_asset_ids, client) -> C
         confidence=result.confidence,
         verdict=verdict,
         citation_status=citation_status,
+        correct=correct,
     )
 
 
@@ -191,6 +198,35 @@ def _write_results(cases: list[CaseResult]) -> None:
         lines.append(f"- Verified: {citation_verified} / {len(citation_checked)}")
     else:
         lines.append("- No LLM-path fields to check (nothing has been run live yet).")
+    lines.append("")
+
+    lines.append("## Confidence calibration: is \"high\" actually more trustworthy than \"medium\"?\n")
+    lines.append(
+        "Only counts cases the model itself actually judged (excludes the deterministic "
+        "router's cases, since those never asked the model anything). `intake.py` currently "
+        "auto-files both `high` and `medium` confidence and only holds back `low` -- that only "
+        "makes sense if `medium` is actually about as reliable as `high`. This table is the "
+        "evidence either way, not a guess.\n"
+    )
+    llm_cases = [c for c in cases if c.actual_method == "llm"]
+    if llm_cases:
+        lines.append("| confidence | cases | correct | accuracy |")
+        lines.append("|---|---|---|---|")
+        for level in ["high", "medium", "low"]:
+            bucket = [c for c in llm_cases if c.confidence == level]
+            if not bucket:
+                continue
+            correct_count = sum(1 for c in bucket if c.correct)
+            accuracy = f"{100 * correct_count / len(bucket):.0f}%"
+            lines.append(f"| {level} | {len(bucket)} | {correct_count} | {accuracy} |")
+        lines.append("")
+        lines.append(
+            "If `medium`'s accuracy is close to `low`'s (or far below `high`'s), that's a "
+            "concrete reason to change `intake.py`'s CONFIDENT_LEVELS to only auto-file "
+            "`high` -- a change made from this evidence, not speculatively."
+        )
+    else:
+        lines.append("- No LLM-path cases to calibrate against (nothing has been run live yet).")
     lines.append("")
 
     lines.append("## Error taxonomy (by failure_mode)\n")

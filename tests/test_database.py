@@ -15,9 +15,12 @@ from compliance_tracker.config_schema import (
 from compliance_tracker.database import (
     append_reminders,
     load_needs_review,
+    load_pending_drafts,
     load_reminder_summary,
     load_results_and_notes,
+    mark_draft_sent,
     record_extraction_outcome,
+    save_drafts,
     save_note,
     sync_registry,
 )
@@ -29,6 +32,7 @@ class FakeDBClient:
         self.reminders = []
         self.extraction_logs = []
         self.extracted_values = []
+        self.drafts = {}  # (domain, asset_id) -> {...}
 
     def upsert_record(self, domain, asset_id, record):
         key = (domain, asset_id)
@@ -72,6 +76,18 @@ class FakeDBClient:
 
     def get_extracted_values(self, domain):
         return [r for r in self.extracted_values if r["domain"] == domain]
+
+    def save_draft(self, domain, asset_id, to_name, to_email, subject, body):
+        self.drafts[(domain, asset_id)] = {
+            "asset_id": asset_id, "to_name": to_name, "to_email": to_email,
+            "subject": subject, "body": body, "sent_at": None,
+        }
+
+    def get_drafts(self, domain):
+        return [v for (d, _), v in self.drafts.items() if d == domain]
+
+    def mark_draft_sent(self, domain, asset_id):
+        self.drafts[(domain, asset_id)]["sent_at"] = "2026-01-01T00:00:00+00:00"
 
 
 def build_config(tmp_path, csv_content, domain="Test Domain", registry_key="", rules=None):
@@ -226,3 +242,58 @@ def test_two_lenses_sharing_a_registry_key_see_the_same_synced_assets(tmp_path):
     save_note(client, lens_a.registry_key, "AST-1", {"Notes": "flagged by ops"})
     _, notes_b = load_results_and_notes(client, lens_b)
     assert notes_b["AST-1"] == {"Notes": "flagged by ops"}
+
+
+def test_save_drafts_then_load_pending_drafts_round_trips():
+    from compliance_tracker.email_drafter import DraftedEmail
+
+    client = FakeDBClient()
+    draft = DraftedEmail(
+        asset_id="AST-1", to_name="Dana", to_email="dana@example.com",
+        subject="Action Required", body="Please resolve...", file_path="unused",
+    )
+
+    save_drafts(client, "Test Domain", [draft])
+    pending = load_pending_drafts(client, "Test Domain")
+
+    assert len(pending) == 1
+    assert pending[0]["asset_id"] == "AST-1"
+    assert pending[0]["subject"] == "Action Required"
+    assert pending[0]["sent_at"] is None
+
+
+def test_load_pending_drafts_excludes_sent_ones():
+    from compliance_tracker.email_drafter import DraftedEmail
+
+    client = FakeDBClient()
+    save_drafts(client, "Test Domain", [
+        DraftedEmail(asset_id="AST-1", to_name="Dana", to_email="dana@example.com",
+                     subject="s1", body="b1", file_path="unused"),
+        DraftedEmail(asset_id="AST-2", to_name="Sam", to_email="sam@example.com",
+                     subject="s2", body="b2", file_path="unused"),
+    ])
+
+    mark_draft_sent(client, "Test Domain", "AST-1")
+    pending = load_pending_drafts(client, "Test Domain")
+
+    assert len(pending) == 1
+    assert pending[0]["asset_id"] == "AST-2"
+
+
+def test_save_drafts_overwrites_earlier_unsent_draft_for_same_asset():
+    from compliance_tracker.email_drafter import DraftedEmail
+
+    client = FakeDBClient()
+    save_drafts(client, "Test Domain", [
+        DraftedEmail(asset_id="AST-1", to_name="Dana", to_email="dana@example.com",
+                     subject="old subject", body="old body", file_path="unused"),
+    ])
+    save_drafts(client, "Test Domain", [
+        DraftedEmail(asset_id="AST-1", to_name="Dana", to_email="dana@example.com",
+                     subject="new subject", body="new body", file_path="unused"),
+    ])
+
+    pending = load_pending_drafts(client, "Test Domain")
+
+    assert len(pending) == 1
+    assert pending[0]["subject"] == "new subject"

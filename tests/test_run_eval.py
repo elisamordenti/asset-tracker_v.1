@@ -151,6 +151,42 @@ def test_evaluate_case_genuinely_ambiguous_and_abstained_is_match(tmp_path, monk
     assert result.citation_status == "n/a"
 
 
+def test_write_results_calibration_table_separates_confidence_levels(tmp_path, monkeypatch):
+    import run_eval
+
+    results_path = tmp_path / "results.md"
+    monkeypatch.setattr(run_eval, "RESULTS_PATH", results_path)
+    monkeypatch.setattr(run_eval, "FIXTURES_DIR", tmp_path)
+
+    high_fixture = tmp_path / "high.pdf"
+    write_pdf(high_fixture, ["Insurance Certificate", "Asset / Entity: AST-1", "Policy Expiry: 2027-01-15"])
+    medium_fixture = tmp_path / "medium.pdf"
+    write_pdf(medium_fixture, ["Insurance Certificate", "Asset / Entity: AST-1", "Policy Expiry: 2027-01-15"])
+
+    high_row = _row("high.pdf", "AST-1", "insurance_doc_on_file", "llm", "insurance_expiry", "2027-01-15", "x")
+    medium_row = _row("medium.pdf", "AST-1", "insurance_doc_on_file", "llm", "insurance_expiry", "2027-01-15", "x")
+
+    high_fake = FakeLLMClient(_RawExtraction(
+        asset_id="AST-1", document_type="insurance_doc_on_file", confidence="high",
+        fields=[{"field": "insurance_expiry", "value": "2027-01-15", "citation": "Policy Expiry: 2027-01-15"}],
+    ))
+    medium_fake = FakeLLMClient(_RawExtraction(
+        asset_id="AST-1", document_type="insurance_doc_on_file", confidence="medium",
+        fields=[{"field": "insurance_expiry", "value": "2099-01-01", "citation": "made up"}],  # wrong
+    ))
+
+    candidates = _make_candidates()
+    high_case = evaluate_case(high_row, candidates, ["AST-1"], client=high_fake)
+    medium_case = evaluate_case(medium_row, candidates, ["AST-1"], client=medium_fake)
+
+    _write_results([high_case, medium_case])
+
+    content = results_path.read_text(encoding="utf-8")
+    assert "Confidence calibration" in content
+    assert "| high | 1 | 1 | 100% |" in content
+    assert "| medium | 1 | 0 | 0% |" in content
+
+
 def test_write_results_produces_a_summary_with_all_verdicts(tmp_path, monkeypatch):
     import run_eval
 

@@ -33,7 +33,7 @@ because it has a different display name.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Protocol
 
 from compliance_tracker.archive import DocumentArchive
@@ -56,6 +56,9 @@ class DBClient(Protocol):
         self, domain: str, asset_id: str, field: str, value: str, source_file: str, confidence: str, extracted_at: str
     ) -> None: ...
     def get_extracted_values(self, domain: str) -> list[dict[str, Any]]: ...  # [{asset_id, field, value, extracted_at}]
+    def save_draft(self, domain: str, asset_id: str, to_name: str, to_email: str, subject: str, body: str) -> None: ...
+    def get_drafts(self, domain: str) -> list[dict[str, Any]]: ...  # [{asset_id, to_name, to_email, subject, body, sent_at}]
+    def mark_draft_sent(self, domain: str, asset_id: str) -> None: ...
 
 
 def sync_registry(client: DBClient, config: AppConfig) -> int:
@@ -118,6 +121,25 @@ def load_needs_review(client: DBClient, domain: str) -> list[dict[str, Any]]:
     auto-filed document -- i.e. still sitting under the archive's
     `_pending_review` prefix, waiting for a human. Most recent first."""
     return [entry for entry in client.get_extraction_log(domain) if entry["outcome"] != "filed"]
+
+
+def save_drafts(client: DBClient, domain: str, drafts) -> None:
+    """Persist drafted reminder emails so the review screen survives a
+    restart -- one row per asset, overwriting any earlier unsent draft for
+    that same asset (a fresh reminder cycle replaces the last one)."""
+    for draft in drafts:
+        client.save_draft(domain, draft.asset_id, draft.to_name, draft.to_email, draft.subject, draft.body)
+
+
+def load_pending_drafts(client: DBClient, domain: str) -> list[dict[str, Any]]:
+    """Drafts that exist but haven't been marked sent yet -- what the
+    Reminders review screen should show, loaded fresh on every page render
+    instead of relying on in-memory session state."""
+    return [d for d in client.get_drafts(domain) if not d.get("sent_at")]
+
+
+def mark_draft_sent(client: DBClient, domain: str, asset_id: str) -> None:
+    client.mark_draft_sent(domain, asset_id)
 
 
 def build_supabase_client(url: str, key: str) -> DBClient:
@@ -201,3 +223,29 @@ class _SupabaseDBClient:
             .execute()
         )
         return resp.data
+
+    def save_draft(self, domain: str, asset_id: str, to_name: str, to_email: str, subject: str, body: str) -> None:
+        # A fresh draft always overwrites any earlier one for the same asset
+        # and resets sent_at -- re-drafting starts a new, unsent review cycle.
+        self._raw.table("email_drafts").upsert(
+            {
+                "domain": domain, "asset_id": asset_id, "to_name": to_name, "to_email": to_email,
+                "subject": subject, "body": body, "sent_at": None,
+            },
+            on_conflict="domain,asset_id",
+        ).execute()
+
+    def get_drafts(self, domain: str) -> list[dict[str, Any]]:
+        resp = (
+            self._raw.table("email_drafts")
+            .select("asset_id, to_name, to_email, subject, body, sent_at")
+            .eq("domain", domain)
+            .execute()
+        )
+        return resp.data
+
+    def mark_draft_sent(self, domain: str, asset_id: str) -> None:
+        sent_at = datetime.now(timezone.utc).isoformat()
+        self._raw.table("email_drafts").update({"sent_at": sent_at}).eq("domain", domain).eq(
+            "asset_id", asset_id
+        ).execute()

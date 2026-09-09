@@ -54,8 +54,19 @@ class DraftedEmail:
     file_path: Path
 
 
-def _safe_filename(asset_id: str) -> str:
+def safe_filename(asset_id: str) -> str:
     return _SAFE_FILENAME_RE.sub("_", asset_id)
+
+
+def write_draft_file(draft: DraftedEmail) -> None:
+    """(Re)writes the on-disk .txt draft from a DraftedEmail's current
+    subject/body -- used both when a draft is first created and whenever a
+    reviewer edits one on the tracker page, so the file on disk always
+    matches whatever was actually sent."""
+    draft.file_path.write_text(
+        f"To: {draft.to_name} <{draft.to_email}>\nSubject: {draft.subject}\n\n{draft.body}\n",
+        encoding="utf-8",
+    )
 
 
 def _render(template: str, context: dict[str, str]) -> str:
@@ -108,22 +119,16 @@ def draft_emails(
         subject = _render(config.email.subject_template, context)
         body = _render(config.email.body_template, context)
 
-        file_path = output_dir / f"{_safe_filename(result.asset_id)}.txt"
-        file_path.write_text(
-            f"To: {contact_name} <{contact_email}>\nSubject: {subject}\n\n{body}\n",
-            encoding="utf-8",
+        draft = DraftedEmail(
+            asset_id=result.asset_id,
+            to_name=contact_name,
+            to_email=contact_email,
+            subject=subject,
+            body=body,
+            file_path=output_dir / f"{safe_filename(result.asset_id)}.txt",
         )
-
-        drafts.append(
-            DraftedEmail(
-                asset_id=result.asset_id,
-                to_name=contact_name,
-                to_email=contact_email,
-                subject=subject,
-                body=body,
-                file_path=file_path,
-            )
-        )
+        write_draft_file(draft)
+        drafts.append(draft)
 
     return drafts
 

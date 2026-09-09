@@ -12,10 +12,12 @@ python eval/run_eval.py
 
 This overwrites this file with real output: a verdict for each of the 14
 fixtures in `eval/fixtures/` (`MATCH` / `FALSE_NEGATIVE` / `FALSE_POSITIVE`),
-whether the deterministic router resolved it without an LLM call, and
-whether the model's own citation for each extracted value actually verifies
-against the source document. See `eval/run_eval.py`'s module docstring for
-exactly what each of those means and why.
+whether the deterministic router resolved it without an LLM call, whether
+the model's own citation for each extracted value actually verifies against
+the source document, and a confidence-calibration table -- when the model
+itself says "high" vs "medium" vs "low," does accuracy actually track that?
+See `eval/run_eval.py`'s module docstring for exactly what each of those
+means and why.
 
 ## What the fixtures stress
 
@@ -39,8 +41,11 @@ exactly what each of those means and why.
 
 `intake.py`'s `CONFIDENT_LEVELS = {"high", "medium"}` treats medium-confidence
 extractions the same as high-confidence ones for auto-filing purposes. That
-threshold has never been measured against real failure data. Once this eval
-has been run against a larger, real sample of traffic (not just these 14
-adversarial fixtures), the FALSE_NEGATIVE rate broken out by confidence level
-is the right evidence to revisit it with -- not a speculative change made
-without that evidence.
+threshold has never been measured against real failure data -- the
+confidence-calibration table this script produces is exactly the evidence
+needed to check it: if `medium` turns out about as unreliable as `low`,
+that's a concrete reason to change the threshold; if `medium` holds up
+about as well as `high`, the current rule is fine as-is. Either way it
+should be a change made from this evidence once the eval has been run
+against a larger, real sample of traffic (not just these 14 adversarial
+fixtures) -- not a speculative change made without it.

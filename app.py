@@ -15,8 +15,13 @@ images go straight to Claude's vision input, no OCR step); EMAIL_SEND_MODE=live
 
 This file is UI glue only -- every piece of actual logic it calls into
 (database.py, validator.py, excel_report.py, email_drafter.py,
-extraction.py, intake.py, reminders.py, filters.py) is independently
-unit-tested; this page is verified by running it, not by an automated test.
+extraction.py, intake.py, filters.py) is independently unit-tested; this
+page is verified by running it, not by an automated test. The scheduled/
+unattended path (scripts/send_reminders.py) uses reminders.py's
+run_reminder_cycle() instead, which drafts and sends in one shot since
+nobody's there to review a preview -- this page draws on the same
+underlying pieces (draft_emails, send_drafted_emails) directly, so a human
+can review drafts before anything is sent.
 """
 
 from __future__ import annotations
@@ -33,19 +38,23 @@ from dotenv import load_dotenv
 from compliance_tracker.archive import build_supabase_storage_archive
 from compliance_tracker.config_schema import load_config
 from compliance_tracker.database import (
+    append_reminders,
     build_supabase_client,
     load_needs_review,
+    load_pending_drafts,
     load_reminder_summary,
     load_results_and_notes,
+    mark_draft_sent,
     record_extraction_outcome,
+    save_drafts,
     save_note,
     sync_registry,
 )
+from compliance_tracker.email_drafter import DraftedEmail, draft_emails, safe_filename, send_drafted_emails, write_draft_file
 from compliance_tracker.excel_report import build_tracker_table, next_deadline
 from compliance_tracker.extraction import build_document_type_candidates
 from compliance_tracker.filters import apply_filters, apply_search, infer_filter_specs
 from compliance_tracker.intake import process_upload
-from compliance_tracker.reminders import run_reminder_cycle
 
 load_dotenv()  # picks up a local .env file, if present, before any os.environ.get() below
 
@@ -256,22 +265,76 @@ def main():
     st.divider()
     st.subheader("Reminders")
     st.write(f"{len(flagged)} of {len(results)} assets are flagged.")
+
     if st.button("Draft reminders for flagged assets"):
-        outcome = run_reminder_cycle(
-            config, client, base_output_dir,
-            send=os.environ.get("EMAIL_SEND_MODE") == "live",
-            archive=archive,
-        )
-        st.success(f"Drafted {len(outcome.drafts)} email(s) to {base_output_dir / 'emails'}")
-        if outcome.sent is not None:
-            st.success(f"Sent {outcome.sent} email(s).")
-        elif outcome.send_error:
-            st.error(outcome.send_error)
+        append_reminders(client, config.registry_key, [r.asset_id for r in flagged])
+        fresh_reminder_summary = load_reminder_summary(client, config.registry_key)
+        new_drafts = draft_emails(config, results, fresh_reminder_summary, base_output_dir / "emails")
+        save_drafts(client, config.registry_key, new_drafts)
         st.rerun()
+
+    # Loaded fresh from Supabase on every render (not session memory) so the
+    # review list survives a page reload or the app restarting.
+    pending = load_pending_drafts(client, config.registry_key)
+    drafts = [
+        DraftedEmail(
+            asset_id=d["asset_id"], to_name=d["to_name"], to_email=d["to_email"],
+            subject=d["subject"], body=d["body"],
+            file_path=base_output_dir / "emails" / f"{safe_filename(d['asset_id'])}.txt",
+        )
+        for d in pending
+    ]
+
+    if drafts:
+        sendable = [d for d in drafts if d.to_email]
+        st.write(
+            f"{len(drafts)} draft(s) ready to review -- {len(sendable)} can actually be sent "
+            "(have a contact email on file)."
+        )
+        for draft in drafts:
+            missing_email = not draft.to_email
+            label = f"{'⚠ ' if missing_email else ''}{draft.asset_id} — {draft.subject}"
+            with st.expander(label):
+                if missing_email:
+                    st.warning("No contact email on file for this asset -- this one can't be sent.")
+                st.text(f"To: {draft.to_name} <{draft.to_email}>")
+                edited_subject = st.text_input("Subject", value=draft.subject, key=f"subject_{draft.asset_id}")
+                edited_body = st.text_area("Body", value=draft.body, key=f"body_{draft.asset_id}", height=220)
+                if not missing_email and st.button("Send this one", key=f"send_{draft.asset_id}"):
+                    draft.subject, draft.body = edited_subject, edited_body
+                    write_draft_file(draft)
+                    try:
+                        send_drafted_emails([draft])
+                        mark_draft_sent(client, config.registry_key, draft.asset_id)
+                        st.success(f"Sent to {draft.to_email}.")
+                        st.rerun()
+                    except RuntimeError as e:
+                        st.error(str(e))
+
+        if len(drafts) > 1 and st.button("Send all of the above"):
+            for d in drafts:
+                d.subject = st.session_state.get(f"subject_{d.asset_id}", d.subject)
+                d.body = st.session_state.get(f"body_{d.asset_id}", d.body)
+                write_draft_file(d)
+            try:
+                sent = send_drafted_emails(drafts)
+                for d in drafts:
+                    if d.to_email:  # send_drafted_emails() itself skips these -- keep in sync
+                        mark_draft_sent(client, config.registry_key, d.asset_id)
+                st.success(f"Sent {sent} email(s).")
+                st.rerun()
+            except RuntimeError as e:
+                st.error(str(e))
+
     st.caption(
-        "This only runs when someone clicks the button above. To send reminders on a "
-        f"schedule instead, run `python scripts/send_reminders.py --config {config_paths[domain_name]} "
-        "--send` from whatever scheduler you end up hosting this on (cron, a GitHub Action, Task Scheduler, ...)."
+        "Drafting never sends anything by itself -- edit the subject/body of any draft "
+        'above directly, then send it individually with "Send this one," or use "Send all '
+        'of the above" once EMAIL_SEND_MODE and SMTP_* are configured (see the top of this '
+        "file). Edits are saved to the .txt draft on disk the moment you send, so it always "
+        "matches what actually went out. To send automatically on a schedule instead -- no "
+        "review step, since nobody's there to see it -- run "
+        f"`python scripts/send_reminders.py --config {config_paths[domain_name]} --send` from "
+        "whatever scheduler you end up hosting this on (cron, a GitHub Action, Task Scheduler, ...)."
     )
 
     st.divider()
