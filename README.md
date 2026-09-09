@@ -10,6 +10,53 @@ send reminders directly; local Excel and Google Sheets export remain
 available as CLI commands. Zero code changes required to point it at a
 completely different domain.
 
+## The 90-second version
+
+**The problem.** Renewable energy operators managing hundreds of
+distributed assets spend weeks manually checking compliance documents and
+chasing clients for missing ones (full before/after in the next section).
+
+**Design approach.** Two things treated as a design principle here, not an
+afterthought: match each task to the cheapest safe method, and keep a human
+in the loop anywhere automation could go wrong silently.
+- Not every document needs an AI call. A cheap, regex-only check runs
+  first — if a file's name already matches the firm's own filing
+  convention *and* its content agrees, the value is extracted without ever
+  reaching Claude; only genuinely ambiguous documents fall through to the
+  model. This is proven, not just claimed: the test suite includes a fake
+  AI client that raises an error if it's ever called, confirming the model
+  is never invoked for the easy cases and always invoked for the ambiguous
+  ones (`tests/test_extraction.py`).
+- Follow-up emails are drafted **per asset**, reviewed and editable
+  individually right on the page, and sent one at a time or all together —
+  never generated and blasted out with no human looking first. The
+  wording itself isn't hardcoded in code; it's a plain YAML template
+  anyone can open and edit directly (`config/energy_assets.yaml`'s
+  `email:` block).
+
+**Reliability.** A 14-document adversarial eval set (ambiguous dates, a
+field that's genuinely absent, a prompt-injection attempt, content pushed
+past the model's own truncation limit) checks three separate things: was
+the answer right, weighted by what a wrong answer would actually cost;
+does the model's cited source text actually exist in the document (a
+hallucination check needing no ground truth at all); and does the model's
+own stated confidence ("high" vs "medium" vs "low") actually predict
+whether it's correct. **Deliberately not run live in this environment** —
+it costs real API usage, and that cost was consciously not spent here. The
+harness and its own tests are fully built and passing without ever calling
+a real model. See [`eval/`](eval/) for exactly what's measured and why.
+
+**What I'd change next.** Run the eval for real, and use the
+confidence-calibration result to check whether `intake.py`'s current rule
+(auto-file both `"high"` and `"medium"` confidence) actually holds up —
+right now that's an assumption, not something verified. Turn the
+"skipped the AI entirely" rate into a concrete cost-savings number instead
+of just a router that works.
+
+Everything below this point is the implementation — architecture, the web
+app, the extraction pipeline, the exact schema — in the detail needed to
+actually run or audit it, not just skim it.
+
 ## The problem this replaces
 
 In a consulting role, I worked alongside renewable energy producers managing
