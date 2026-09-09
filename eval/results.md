@@ -1,7 +1,13 @@
 # Extraction pipeline: eval results
 
-**Not yet run.** This file is checked in as a template so the structure of
-the measurement is visible without needing a live Claude API call.
+**Not run — deliberately, not by oversight.** Running this for real costs a
+small amount of actual Claude API usage, and that cost was consciously not
+spent in this repo/environment. This file is checked in as a template so
+the structure and intent of the measurement — what gets checked, and why —
+is fully visible without needing to spend anything. The harness itself is
+built and covered by its own test suite (`tests/test_run_eval.py`, against
+a fake injectable client, same pattern as the rest of this repo), so its
+logic is verified independently of ever calling a real model.
 
 To generate real numbers:
 

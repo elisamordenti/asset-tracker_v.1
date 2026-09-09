@@ -377,11 +377,16 @@ costs someone 30 seconds. `eval/` exists to measure that, not assert it.
   designed to stress.
 
 This makes no Claude API calls unless `ANTHROPIC_API_KEY` is set — same
-opt-in-only pattern as sending real reminder emails. Today, `eval/results.md`
-ships as a template: the harness and its own test suite
-(`tests/test_run_eval.py`, run against a fake injectable client, same as
-everywhere else in this repo) are built and green, but the real numbers are
-one `python eval/run_eval.py` away, not yet run in this environment.
+opt-in-only pattern as sending real reminder emails. The harness itself and
+its own test suite (`tests/test_run_eval.py`, run against a fake injectable
+client, same as everywhere else in this repo) are built and fully green
+without ever touching a real API key. `eval/results.md` currently ships as
+a template rather than real numbers: running it live costs a small amount
+of real Claude API usage, and that cost was deliberately not spent in this
+repo/environment. Running `python eval/run_eval.py` with a funded
+`ANTHROPIC_API_KEY` is the one remaining step to turn this from "here is
+the measurement built and tested" into "here is what it actually measured"
+— left as a conscious choice, not an oversight.
 
 ## CLI alternatives: local Excel, or a live Google Sheet
 
