@@ -179,7 +179,6 @@ def _write_tracker_sheet(
 ) -> None:
     info_columns = config.excel.info_columns
     rules = config.rules
-    notes_columns = config.excel.notes_columns
 
     headers, ordered, rows = build_tracker_table(config, results, reminder_summary, existing_notes)
     _write_header(ws, headers)

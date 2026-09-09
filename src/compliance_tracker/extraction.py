@@ -38,7 +38,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from compliance_tracker.config_schema import AppConfig, RuleConfig
+from compliance_tracker.config_schema import AppConfig
 
 DEFAULT_MODEL = "claude-opus-5"
 
